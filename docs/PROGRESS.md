@@ -564,7 +564,69 @@ an unnoticed one.
     a second implementation of the security-relevant path.
 
 ## Stage 8 — Email channel
-**Status:** not started
+**Status:** done (code + simulator/unit-tested; real-mailbox test deferred to
+the user, same pattern as Stage 7)
+
+- Works: MIME parsing (`app/channels/email_parsing.py`) - prefers
+  `text/plain`, falls back to stripped `text/html`; quoted-reply stripping
+  covers Gmail (`On ... wrote:`), Outlook (`-----Original Message-----`) and
+  `>`-prefixed styles, plus signature stripping (`-- `); thread-root
+  resolution from `References`/`In-Reply-To`/own `Message-ID`; loop
+  protection (`Auto-Submitted`, `List-Id`/`List-Unsubscribe`, bulk
+  `Precedence`). `EmailAdapter` (`app/channels/email.py`) - `parse()` uses
+  the above; `send()` looks up the recipient address and reply-threading
+  context from the DB (see the real bug below), sends via `smtplib` off the
+  event loop (`asyncio.to_thread`). `app/workers/email_poll.py` - IMAP
+  poller as an arq **cron job** (`second={0, 30}`, ~30s cadence, matching
+  the build-stages doc), all blocking `imaplib` I/O isolated to a thread,
+  marks messages `\Seen` as fetched, skips auto-replies before ingesting.
+  `POST /dev/simulate/email` mirrors the other channels' simulators. 169
+  backend tests passing (19 new: parsing/threading/loop-protection as pure
+  functions against real `email.message.Message` objects, adapter
+  send/threading against the real DB lookup). **Live-verified via the
+  simulator against the real worker and real Gemini/Groq**: thread
+  continuity confirmed (a reply referencing an earlier `Message-ID` landed
+  in the same `conversation_id`), dedupe confirmed (an exact duplicate
+  `external_message_id` stored as nothing), the arq cron fired on schedule
+  and correctly no-op'd (`EMAIL_ENABLED=false` in dev), and - after fixing
+  the bug below - the correct recipient address appeared in the send log.
+- Known broken: none against what's testable without a real mailbox.
+- Skipped: the real "email the address, get a reply" test, deliberately -
+  needs a dedicated Gmail account + app password, which only makes sense for
+  the user to set up themselves (manual steps in the README's new "Trying
+  email for real" section, same reasoning as Stage 7's WhatsApp deferral).
+- Notes:
+  - **Real bug, found live**: `EmailAdapter.send()` originally used
+    `reply.external_thread_id` as the `To:` address. That's wrong for email
+    specifically - `external_thread_id` is the *thread-root Message-ID*
+    (the conversation-grouping key), not an address, and email is the one
+    channel where the threading id and the addressing id are genuinely
+    different things. Web (`session_id`) and WhatsApp (phone number) don't
+    have this problem because the same identifier legitimately serves both
+    roles for them, which is exactly why the bug wasn't obvious from the
+    design: three channels sharing one field name (`external_thread_id`)
+    quietly encouraged treating them as interchangeable. It surfaced live
+    as a Gmail 535 auth error logged against `to=msg1@example.com` - a
+    Message-ID-shaped string, not an address - even though the *actual*
+    failure reason (no real credentials configured) was unrelated and would
+    have masked the bug in a passing-looking way if not read carefully.
+    Fixed by looking up the customer's `CustomerIdentity` for the `email`
+    channel (not `Customer.email`, which can be unset for a customer who has
+    only ever contacted by email so far - identity resolution never
+    backfills it). Added a regression test asserting the sent `To:` header
+    differs from `external_thread_id`, not just that it's *some* address.
+  - Threading depth is intentionally shallow: replies set `In-Reply-To`/
+    `References` to only the *single* last inbound Message-ID, not an
+    accumulated chain of every prior message in the thread. Most mail
+    clients (Gmail included) thread correctly off subject-matching plus any
+    one overlapping reference, so this is enough - a full References-chain
+    accumulator was scoped out as unnecessary complexity for the accuracy
+    it would add here.
+  - `arq`'s `cron()` accepts a `second={...}` set directly (no `every N
+    seconds` primitive) - `{0, 30}` gives the ~30s cadence the build-stages
+    doc calls for. Verified live that it fires on schedule and that
+    `poll_inbox()`'s `EMAIL_ENABLED` early-return makes it genuinely free
+    to leave running even with no mailbox configured.
 
 ## Stage 9 — Dashboard and metrics
 **Status:** not started

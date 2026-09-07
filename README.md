@@ -118,6 +118,27 @@ sense with you actively driving your phone, so they're not automated:
 Twilio's trial credit is small (~100 WhatsApp messages) - budget it for this
 test and for a demo, not for development, which the simulator already covers.
 
+## Trying email for real
+
+Same story as WhatsApp: the IMAP poller (an arq cron job, `app/workers/
+email_poll.py`), MIME/quoted-text parsing, Message-ID/References threading,
+loop protection (ignores mailing lists and auto-replies), and SMTP send are
+all built and unit-tested (`backend/tests/test_email_parsing.py`,
+`test_email_adapter.py`) without needing a mailbox. `POST
+/dev/simulate/email` exercises the same ingest path the real poller does.
+
+To try it against a real inbox:
+
+1. Create a dedicated, throwaway Gmail address - never a personal one.
+2. Turn on 2-Step Verification, then create an
+   [App Password](https://myaccount.google.com/apppasswords).
+3. In `.env`, set `EMAIL_ENABLED=true`, `SUPPORT_EMAIL` to the address, and
+   `SUPPORT_EMAIL_APP_PASSWORD` to the app password.
+4. `make dev` - the cron job polls every 30s. Email the address and watch
+   the worker log; the reply arrives in the same thread.
+
+No tunnel needed here - IMAP polling reaches out, nothing needs to reach in.
+
 ## Scope
 
 **This is a prototype: stop polishing early, do not skip structure.** Rare

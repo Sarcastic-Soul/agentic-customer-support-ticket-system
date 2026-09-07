@@ -56,6 +56,47 @@ async def simulate_web_message(
     )
 
 
+class SimulateEmailMessage(BaseModel):
+    from_email: str
+    text: str
+    subject: str | None = None
+    external_message_id: str | None = None
+    in_reply_to: str | None = None  # thread root Message-ID, to simulate a reply
+
+
+@router.post("/simulate/email", response_model=SimulateResponse)
+async def simulate_email_message(
+    body: SimulateEmailMessage, session: AsyncSession = Depends(get_session)
+) -> SimulateResponse:
+    """Exercises the same ingest path app/workers/email_poll.py's real IMAP
+    poll does (identity resolution by address, Message-ID/References
+    threading, dedupe), without IMAP, a mailbox, or a wait for the poll
+    interval - see docs/PROGRESS.md Stage 8 for why the real-mailbox test
+    is a manual step instead of an automated one.
+    """
+    external_message_id = body.external_message_id or str(uuid.uuid4())
+    thread_id = body.in_reply_to or external_message_id
+
+    message = await ingest_message(
+        session,
+        channel="email",
+        external_thread_id=thread_id,
+        sender_external_id=body.from_email.lower(),
+        text=body.text,
+        external_message_id=external_message_id,
+        raw_payload=body.model_dump(),
+    )
+    await session.commit()
+
+    if message is None:
+        return SimulateResponse(stored=False)
+
+    await enqueue_handle_message(message.id)
+    return SimulateResponse(
+        stored=True, message_id=message.id, conversation_id=message.conversation_id
+    )
+
+
 class SimulateWhatsAppMessage(BaseModel):
     phone: str  # E.164, e.g. '+919800000001' - no 'whatsapp:' prefix
     text: str
