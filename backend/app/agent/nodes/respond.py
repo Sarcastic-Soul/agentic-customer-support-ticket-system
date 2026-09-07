@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy import select
 
 from app.agent.state import AgentState
-from app.channels.base import Channel, OutboundMessage
+from app.channels.base import Channel, OutboundMessage, format_for_style
 from app.channels.registry import get_adapter
 from app.core.tickets import transition_ticket
 from app.llm.pricing import estimate_cost_usd
@@ -19,10 +19,13 @@ async def respond_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     session = config["configurable"]["session"]
 
+    adapter = get_adapter(Channel(state["channel"]))
+    text = format_for_style(state["draft"], adapter.style())
+
     reply = Message(
         conversation_id=state["conversation_id"],
         role="assistant",
-        body=state["draft"],
+        body=text,
         channel=state["channel"],
         direction="outbound",
     )
@@ -66,12 +69,11 @@ async def respond_node(state: AgentState, config: RunnableConfig) -> dict:
     # enough for the adapter.send() below, which doesn't read from the DB.
     await session.flush()
 
-    adapter = get_adapter(Channel(state["channel"]))
     receipt = await adapter.send(
         OutboundMessage(
             channel=adapter.channel,
             external_thread_id=state["external_thread_id"],
-            text=state["draft"],
+            text=text,
         )
     )
     reply.delivery_status = "sent" if receipt.ok else "failed"

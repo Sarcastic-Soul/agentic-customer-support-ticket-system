@@ -5,6 +5,7 @@ is where "what a WhatsApp message looks like" lives, matching app/channels/web.p
 
 from datetime import UTC, datetime
 
+import httpx
 from twilio.rest import Client
 
 from app.channels.base import (
@@ -16,6 +17,7 @@ from app.channels.base import (
 )
 from app.config import settings
 from app.logging import get_logger
+from app.voice.stt import TranscriptionError, transcribe
 
 logger = get_logger(__name__)
 
@@ -43,23 +45,49 @@ class WhatsAppAdapter:
         form-parsing happen before this is called.
         """
         from_number = _strip_whatsapp_prefix(payload["From"])
+        attachments = [
+            {
+                "url": payload[key],
+                "content_type": payload.get(key.replace("Url", "ContentType")),
+            }
+            for key in payload
+            if key.startswith("MediaUrl")
+        ]
+
+        text = payload.get("Body", "")
+        if not text and attachments:
+            # A pure voice note has no Body - Stage 10's "accept WhatsApp
+            # audio -> normal pipeline, unchanged" means transcribing it
+            # here, inside parse(), same as every other channel's text
+            # extraction (docs/01-architecture.md).
+            text = await self._transcribe_voice_note(attachments[0])
+
         return InboundMessage(
             channel=self.channel,
             external_thread_id=from_number,
             external_message_id=payload["MessageSid"],
             sender_external_id=from_number,
-            text=payload.get("Body", ""),
-            attachments=[
-                {
-                    "url": payload[key],
-                    "content_type": payload.get(key.replace("Url", "ContentType")),
-                }
-                for key in payload
-                if key.startswith("MediaUrl")
-            ],
+            text=text,
+            attachments=attachments,
             received_at=datetime.now(UTC),
             raw=payload,
         )
+
+    async def _transcribe_voice_note(self, attachment: dict) -> str:
+        content_type = attachment.get("content_type") or ""
+        if not content_type.startswith("audio/"):
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    attachment["url"],
+                    auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                )
+                response.raise_for_status()
+            return await transcribe(response.content, content_type)
+        except (httpx.HTTPError, TranscriptionError) as exc:
+            logger.warning("whatsapp_voice_transcription_failed", error=str(exc))
+            return "(voice note received - could not be transcribed)"
 
     async def send(self, reply: OutboundMessage) -> DeliveryReceipt:
         try:

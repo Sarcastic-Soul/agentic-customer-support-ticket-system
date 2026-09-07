@@ -6,7 +6,7 @@ about an order, refund, or policy question.
 Do not invent order, payment, or policy details - if the customer's message
 actually needs one of those, say you're not sure and ask them to clarify
 what they need help with, rather than guessing.
-
+{style_guidance}
 Conversation so far:
 {history}
 

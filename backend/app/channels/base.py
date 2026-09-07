@@ -6,6 +6,7 @@ provider's format. Everything downstream (ingress, the orchestrator) only
 ever sees these types, never a raw webhook payload.
 """
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
@@ -62,3 +63,25 @@ class ChannelAdapter(Protocol):
     async def parse(self, payload: dict) -> InboundMessage: ...
     async def send(self, reply: OutboundMessage) -> DeliveryReceipt: ...
     def style(self) -> ResponseStyle: ...
+
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MD_EMPHASIS_RE = re.compile(r"(\*\*|__|\*|`)")
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def format_for_style(text: str, style: ResponseStyle) -> str:
+    """Enforces a channel's rendering constraints on a generated reply -
+    called once, from respond_node, for every channel. Markdown/URL
+    stripping is a no-op for channels that allow markdown (web); it's what
+    makes WhatsApp and voice's `markdown=False` style() actually mean
+    something, rather than just being a declared-but-unenforced field.
+    """
+    if not style.markdown:
+        text = _MD_LINK_RE.sub(r"\1", text)
+        text = _MD_EMPHASIS_RE.sub("", text)
+        text = _URL_RE.sub("", text)
+        text = re.sub(r" {2,}", " ", text).strip()
+    if len(text) > style.max_length:
+        text = text[: style.max_length - 1].rstrip() + "…"
+    return text

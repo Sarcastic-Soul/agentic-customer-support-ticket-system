@@ -59,5 +59,27 @@ export function useWebChat(sessionId: string) {
     socketRef.current.send(JSON.stringify({ text: trimmed }));
   }, []);
 
-  return { messages, status, sendMessage };
+  // The reply to a voice note arrives the same way a typed message's reply
+  // does - over the WS pub/sub channel already wired above - so this only
+  // needs to upload the recording and show its transcript optimistically.
+  const sendVoiceNote = useCallback(
+    async (blob: Blob) => {
+      const form = new FormData();
+      form.append("session_id", sessionId);
+      form.append("file", blob, "voice-note.webm");
+
+      const response = await fetch("/channels/voice/upload", { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(`voice upload failed (${response.status})`);
+      }
+      const data = (await response.json()) as { transcript: string };
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "customer", text: data.transcript },
+      ]);
+    },
+    [sessionId],
+  );
+
+  return { messages, status, sendMessage, sendVoiceNote };
 }

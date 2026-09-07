@@ -4,6 +4,7 @@ by channel rather than hardcoding which one to use.
 
 from app.channels.base import Channel, ChannelAdapter
 from app.channels.email import EmailAdapter
+from app.channels.voice import VoiceAdapter
 from app.channels.web import WebAdapter
 from app.channels.whatsapp import WhatsAppAdapter
 
@@ -19,6 +20,8 @@ def get_adapter(channel: Channel | str) -> ChannelAdapter:
             _ADAPTERS[channel] = WhatsAppAdapter()
         elif channel == Channel.email:
             _ADAPTERS[channel] = EmailAdapter()
+        elif channel == Channel.voice:
+            _ADAPTERS[channel] = VoiceAdapter()
         else:
             raise NotImplementedError(f"no adapter registered for channel {channel!r} yet")
     return _ADAPTERS[channel]

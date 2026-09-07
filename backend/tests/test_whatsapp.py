@@ -9,11 +9,14 @@ scheme (docs recommend never hand-rolling that check).
 import base64
 import hashlib
 import hmac
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
 
 from app.channels.base import OutboundMessage
 from app.channels.whatsapp import OUTSIDE_WINDOW_ERROR_CODE, WhatsAppAdapter
 from app.ingress.whatsapp import verify_signature
+from app.voice.stt import TranscriptionError
 
 
 def _twilio_signature(auth_token: str, url: str, params: dict) -> str:
@@ -65,6 +68,77 @@ async def test_parse_extracts_media_attachments():
     assert len(inbound.attachments) == 1
     assert inbound.attachments[0].url == "https://api.twilio.com/media/abc"
     assert inbound.attachments[0].content_type == "image/jpeg"
+
+
+async def test_parse_transcribes_a_voice_note_with_empty_body(monkeypatch):
+    """A pure voice note arrives with Body == "" and a MediaUrl - the same
+    shape a customer sending a photo would have, distinguished only by
+    content type starting with audio/, which is what triggers STT.
+    """
+    monkeypatch.setattr(
+        "app.channels.whatsapp.transcribe",
+        AsyncMock(return_value="where is my order"),
+    )
+
+    async def fake_get(self, url, auth=None):
+        return httpx.Response(200, content=b"fake-ogg-bytes", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    adapter = WhatsAppAdapter(client=MagicMock())
+    payload = {
+        "From": "whatsapp:+919800000001",
+        "Body": "",
+        "MessageSid": "SM2",
+        "MediaUrl0": "https://api.twilio.com/media/voice-note",
+        "MediaContentType0": "audio/ogg",
+    }
+
+    inbound = await adapter.parse(payload)
+
+    assert inbound.text == "where is my order"
+    assert inbound.attachments[0].content_type == "audio/ogg"
+
+
+async def test_parse_falls_back_honestly_when_transcription_fails(monkeypatch):
+    monkeypatch.setattr(
+        "app.channels.whatsapp.transcribe",
+        AsyncMock(side_effect=TranscriptionError("empty audio")),
+    )
+
+    async def fake_get(self, url, auth=None):
+        return httpx.Response(200, content=b"fake-ogg-bytes", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    adapter = WhatsAppAdapter(client=MagicMock())
+    payload = {
+        "From": "whatsapp:+919800000001",
+        "Body": "",
+        "MessageSid": "SM3",
+        "MediaUrl0": "https://api.twilio.com/media/voice-note",
+        "MediaContentType0": "audio/ogg",
+    }
+
+    inbound = await adapter.parse(payload)
+
+    assert inbound.text != ""
+    assert "could not be transcribed" in inbound.text
+
+
+async def test_parse_does_not_transcribe_non_audio_media():
+    adapter = WhatsAppAdapter(client=MagicMock())
+    payload = {
+        "From": "whatsapp:+919800000001",
+        "Body": "",
+        "MessageSid": "SM4",
+        "MediaUrl0": "https://api.twilio.com/media/photo.jpg",
+        "MediaContentType0": "image/jpeg",
+    }
+
+    inbound = await adapter.parse(payload)
+
+    assert inbound.text == ""
 
 
 async def test_send_success_returns_receipt_with_sid():

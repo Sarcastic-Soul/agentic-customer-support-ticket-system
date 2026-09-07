@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { useVoiceRecorder } from "../hooks/useVoiceRecorder";
 import { useWebChat } from "../hooks/useWebChat";
 import { getOrCreateSessionId } from "../lib/session";
 
@@ -15,8 +16,9 @@ const STATUS_LABEL: Record<string, string> = {
 
 function ChatPage() {
   const [sessionId] = useState(getOrCreateSessionId);
-  const { messages, status, sendMessage } = useWebChat(sessionId);
+  const { messages, status, sendMessage, sendVoiceNote } = useWebChat(sessionId);
   const [draft, setDraft] = useState("");
+  const recorder = useVoiceRecorder(sendVoiceNote);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,6 +64,12 @@ function ChatPage() {
         ))}
       </main>
 
+      {recorder.error && (
+        <p className="border-t border-red-100 bg-red-50 px-4 py-1.5 text-xs text-red-600">
+          {recorder.error}
+        </p>
+      )}
+
       <form onSubmit={handleSubmit} className="flex gap-2 border-t border-neutral-200 bg-white p-3">
         <input
           value={draft}
@@ -69,6 +77,19 @@ function ChatPage() {
           placeholder="Type a message…"
           className="flex-1 rounded-full border border-neutral-300 px-4 py-2 text-sm outline-none focus:border-neutral-500"
         />
+        <button
+          type="button"
+          disabled={status !== "open" || recorder.status === "processing"}
+          onClick={recorder.status === "recording" ? recorder.stop : recorder.start}
+          aria-label={recorder.status === "recording" ? "Stop recording" : "Record a voice note"}
+          className={`rounded-full px-4 py-2 text-sm font-medium disabled:opacity-40 ${
+            recorder.status === "recording"
+              ? "bg-red-600 text-white"
+              : "bg-neutral-100 text-neutral-700"
+          }`}
+        >
+          {recorder.status === "recording" ? "● Stop" : recorder.status === "processing" ? "…" : "🎤"}
+        </button>
         <button
           type="submit"
           disabled={status !== "open"}

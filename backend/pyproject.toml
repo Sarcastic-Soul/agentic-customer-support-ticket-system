@@ -25,6 +25,7 @@ dependencies = [
     "structlog>=24.4",
     "httpx>=0.27",
     "twilio>=9.10",
+    "python-multipart>=0.0.12",
 ]
 
 [dependency-groups]

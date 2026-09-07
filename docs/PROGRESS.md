@@ -691,6 +691,82 @@ the user, same pattern as Stage 7)
     it's an audit counter with no correctness implication.
 
 ## Stage 10 — Voice notes
+**Status:** done
+
+- Works: `app/voice/stt.py` - `transcribe()` against Groq's hosted
+  `whisper-large-v3` (see the decision below for why not a local model).
+  `app/channels/voice.py` - `VoiceAdapter`, same `ChannelAdapter` contract as
+  every other channel, transcribing inside `parse()`
+  (docs/01-architecture.md's "text: already extracted from HTML/audio"),
+  registered in `app/channels/registry.py`. `POST /channels/voice/upload`
+  (`app/ingress/voice.py`) - multipart audio upload from the web widget,
+  gated on `VOICE_ENABLED` same as email's flag. Replies deliver over the
+  same Redis pub/sub channel `WebAdapter` already uses, since the voice
+  note is recorded from the same browser tab that holds the chat's
+  WebSocket. `WhatsAppAdapter.parse()` extended to transcribe a voice note
+  (empty `Body`, an `audio/*` `MediaUrl0`) by downloading it from Twilio
+  with Basic Auth and running it through the same `transcribe()` - "accept
+  WhatsApp audio -> normal pipeline, unchanged" from the build-stages doc.
+  `ResponseStyle` - declared by every adapter since Stage 1 but never
+  actually enforced anywhere - is now wired in for real:
+  `app/channels/base.py:format_for_style()` strips markdown/URLs and
+  truncates to `max_length` for any non-markdown channel (voice, WhatsApp),
+  called once from `respond_node` before both persisting and sending the
+  reply; `answer_node` also feeds a short style-guidance instruction into
+  the `answer`/`chitchat` prompts so generation itself trends short and
+  plain rather than relying only on post-hoc truncation. Frontend:
+  `useVoiceRecorder` (`MediaRecorder`/`getUserMedia`) and a mic button on
+  `/chat`, uploading to the new endpoint and showing the transcript
+  optimistically, same pattern as the existing typed-message send. 181
+  backend tests passing (10 new: `VoiceAdapter`, `format_for_style`,
+  WhatsApp voice-note transcription including the honest-failure fallback).
+  **The orchestrator itself (`app/agent/graph.py`) needed zero changes** -
+  the payoff the build-stages doc calls out.
+  **Live-verified end to end, twice**: (1) `curl` a real recorded clip
+  (synthesized via `gTTS` + `ffmpeg`, since this box has no microphone) to
+  `/channels/voice/upload` - real Groq transcription, real ticket, real
+  LangGraph run (which happened to hit the Gemini free-tier's 20/day quota
+  mid-run, retried, fell back to Groq per the existing non-negotiable
+  resilience, and answered correctly ~80s later) - and the persisted reply
+  is genuinely short/plain/no-markdown, confirming `format_for_style`
+  works on a real LLM-generated reply, not just the unit tests' fixtures.
+  (2) A real Chromium browser (Playwright) with
+  `--use-file-for-fake-audio-capture` feeding that same clip as the
+  microphone - clicked the actual mic button, recorded, and watched the
+  real transcript appear in the chat UI, zero console/network errors.
+- Known broken: none against what's testable without a real phone for the
+  WhatsApp voice-note path.
+- Skipped: `piper` TTS (spoken reply) - the build-stages checklist marks it
+  "Optional", and it's the one piece with no live-verification path on this
+  machine either (no speakers/output to check against, same class of gap as
+  WhatsApp's real-phone test). The real WhatsApp voice-note test, for the
+  same reason Stage 7/8 deferred their real-phone/real-mailbox tests - needs
+  a live Twilio number this environment doesn't have.
+- Notes:
+  - **Real infra bug, found before writing any voice code**: `uv sync` (run
+    to add `python-multipart`) left the project's own editable install
+    broken - the `__editable__...pth`/finder files were gone, only a stale
+    `__pycache__` remained, so `import app` failed inside `pytest`'s
+    collection (but not in a plain `uv run python -c "import app"`, which
+    still had `''` on `sys.path` from the cwd - that's what hid it at
+    first). Fixed with `uv pip install -e .`. Not a voice-specific issue,
+    but it would have silently broken every future `uv sync` in this repo
+    had it gone unnoticed.
+  - **Decision, not an oversight**: `docs/02-tech-stack.md`'s STT design is
+    Parakeet TDT local primary, `faster-whisper` local fallback, Groq API
+    only "if local inference is too slow on the demo machine". This build
+    machine measured ~650MB free RAM with ~4.7GB of swap already in use and
+    no GPU - not practical for either local model. Went straight to the
+    documented API fallback instead, reusing the `groq_api_key` already
+    configured for LLM calls. See
+    `docs/decisions/0005-voice-stt-groq-fallback.md`.
+  - `ResponseStyle` existing-but-unenforced since Stage 1 was a real gap,
+    not something Stage 10 introduced - closing it here benefits WhatsApp's
+    existing replies too (its `style()` declared `markdown=False` since
+    Stage 7, but nothing ever stripped markdown from what actually got
+    sent).
+
+## Stage 11 — Evaluation
 **Status:** not started
 
 ## Stage 11 — Evaluation
@@ -706,11 +782,27 @@ the user, same pattern as Stage 7)
 Things that are broken or missing on purpose. Keep this current — it goes almost
 verbatim into the report's limitations section.
 
-- (nothing yet)
+- No local/offline STT or TTS - voice notes require internet and a Groq API
+  key (Stage 10, `docs/decisions/0005-voice-stt-groq-fallback.md`).
+- Spoken (`piper`) replies are not implemented - text-only replies to voice
+  notes (Stage 10, checklist marks TTS "Optional").
+- Email and WhatsApp's real-provider tests (a real mailbox, a real phone
+  number) are manual steps for whoever runs the demo, not automated -
+  Stages 7/8. The WhatsApp voice-note path inherits the same limitation.
 
 ## Things that surprised us
 
 Anything that cost more time than expected, or turned out differently than the
 blueprint assumed. Good report material, and it stops the same surprise twice.
 
-- (nothing yet)
+- `ResponseStyle` was part of the `ChannelAdapter` protocol since Stage 1 but
+  nothing ever actually read it until Stage 10 needed voice's "no markdown,
+  no URLs" - every channel had been silently sending unformatted LLM output
+  the whole time. Easy gap to leave in a channel-agnostic design: the
+  contract existing isn't the same as the contract being enforced anywhere.
+- A `uv sync` mid-Stage-9 (to add a dependency) silently broke the project's
+  own editable install - `import app` failed inside `pytest` but worked fine
+  from a plain `python -c` (which still had cwd on `sys.path`), which is
+  exactly the kind of thing that looks like a test-runner bug and isn't.
+  `uv pip install -e .` fixed it. Worth checking first if `pytest` ever
+  can't find `app` again after a dependency change.
