@@ -1,6 +1,8 @@
 """Dev-only endpoints. Every external channel gets a simulator before the real
 adapter - this is the web one, built in Stage 1 so the ingress pipeline can be
-exercised (and tested) with the network unplugged.
+exercised (and tested) with the network unplugged. Since Stage 2, it enqueues
+the same worker job the real /channels/web/ws endpoint does, so it stays a
+faithful stand-in rather than a shortcut that quietly drifts from production.
 """
 
 import uuid
@@ -11,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.ingress.pipeline import ingest_message
+from app.workers.queue import enqueue_handle_message
 
 router = APIRouter(prefix="/dev", tags=["dev"])
 
@@ -46,6 +49,8 @@ async def simulate_web_message(
 
     if message is None:
         return SimulateWebResponse(stored=False)
+
+    await enqueue_handle_message(message.id)
     return SimulateWebResponse(
         stored=True, message_id=message.id, conversation_id=message.conversation_id
     )

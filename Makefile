@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed dev demo eval test lint fmt
+.PHONY: up down migrate seed dev api worker frontend demo eval test lint
 
 BACKEND=cd backend && . .venv/bin/activate &&
 
@@ -17,8 +17,22 @@ migrate:
 seed:
 	$(BACKEND) python -m app.seed.run
 
-dev:
+api:
 	$(BACKEND) uvicorn app.main:app --reload --port 8000
+
+worker:
+	$(BACKEND) arq app.workers.settings.WorkerSettings
+
+frontend:
+	cd frontend && pnpm dev
+
+# api + worker + frontend together, backgrounded, cleaned up on Ctrl-C.
+dev:
+	@trap 'kill 0' EXIT INT TERM; \
+	$(MAKE) api & \
+	$(MAKE) worker & \
+	$(MAKE) frontend & \
+	wait
 
 demo:
 	$(MAKE) up

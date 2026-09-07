@@ -108,7 +108,70 @@ an unnoticed one.
     `citext` extensions.
 
 ## Stage 2 — Web chat end to end, no AI
-**Status:** not started
+**Status:** done
+
+- Works: `ChannelAdapter` protocol + `InboundMessage`/`OutboundMessage`/
+  `ResponseStyle` (`app/channels/base.py`); `WebAdapter`
+  (`app/channels/web.py`) parses WS frames and publishes replies over Redis
+  pubsub; `/channels/web/ws?session_id=` WebSocket endpoint
+  (`app/ingress/web.py`) runs the Stage-1 ingest pipeline then enqueues an
+  arq job; `handle_message` worker task (`app/workers/tasks.py`) echoes the
+  message, advances the ticket `new -> ai_working`, increments `ai_turns`,
+  and publishes the reply back through the adapter. `/dev/simulate/web` now
+  enqueues the same job so it stays a faithful stand-in for the real
+  endpoint. Minimal Vite + React + TanStack Router `/chat` page
+  (`frontend/`) connects over WS, shows the transcript, reconnects on drop.
+  `make dev` runs api + worker + frontend together. 80 backend tests
+  passing (added `test_worker.py`), frontend type-checks/builds/lints clean.
+  Full live end-to-end verified with a real WS client: 3 round trips through
+  WS -> ingress -> arq -> worker -> Redis pubsub -> WS, confirmed against the
+  DB (ticket `ai_working`, correct `ai_turns` and message counts).
+- Known broken: none.
+- Skipped: none against the Stage 2 checklist.
+- Notes:
+  - **Real bug caught by the live smoke test, not by unit tests**: `redis-py`
+    delivers pubsub message payloads as `bytes`, but Starlette's
+    `WebSocket.send_text()` requires `str`. The mismatch raised inside an
+    unawaited `asyncio.create_task` background coroutine (`forward_replies`
+    in `app/ingress/web.py`), which asyncio swallows silently by default -
+    the client just times out waiting for a reply with no server-side error
+    logged anywhere. This is exactly the kind of bug the "prototype
+    tolerance, not prototype infrastructure" line in
+    `docs/decisions/0003-prototype-scope.md` argues for keeping the queue
+    and doing a real end-to-end pass rather than only unit-testing pieces in
+    isolation - unit tests for ingest/dedupe/worker logic all passed while
+    this was broken. Fixed by decoding bytes->str, and wrapped the task body
+    in try/except with `logger.exception` so a future failure here logs
+    instead of vanishing.
+  - Divergence from the `01-architecture.md` sequence diagram: the diagram
+    shows the gateway persisting only the raw event + message row, with
+    identity resolution and ticket opening happening in the worker. This
+    build does the full ingest (dedupe, identity, threading, ticket-open)
+    synchronously in the ingress layer before enqueueing, and reserves the
+    worker for the part that will actually become the LLM orchestrator in
+    Stage 4. Reasoning: ingest is cheap deterministic DB writes with no LLM
+    call, so there's no latency reason to defer it, and it meant Stage 1's
+    already-tested `ingress/pipeline.py` didn't need to be re-split. Worth
+    revisiting if a channel's ingest ever turns out to be slow enough to want
+    off the request path too (unlikely - IMAP polling in Stage 8 is already
+    off-path by construction).
+  - `handle_message(ctx, message_id, *, session=None)` takes an optional
+    injected session so tests can run it against the shared test-transaction
+    fixture. Discovered mid-implementation that calling `session.commit()`
+    on that fixture's savepoint-joined session raises `MissingGreenlet` (a
+    SQLAlchemy async internals edge case around the follow-up autobegin) -
+    worked around by only truly `commit()`-ing when the task opened its own
+    session (the real arq path), and `flush()`-ing when a session was
+    injected (sufficient for the caller to observe the change; the test
+    fixture's own rollback still cleans up).
+  - `make dev` (api + worker + frontend backgrounded via `trap 'kill 0'` +
+    `wait`) starts all three correctly under normal use; forcing it down with
+    an external `timeout`/repeated SIGTERM during testing produced noisy
+    `BlockingIOError` teardown spam and one segfault from uvloop's native
+    extension. Did not chase this further - it's an artifact of how the
+    process group was killed during testing, not of a normal single Ctrl-C,
+    and polishing shutdown signal handling is exactly the kind of thing
+    prototype scope says to leave alone.
 
 ## Stage 3 — RAG pipeline
 **Status:** not started

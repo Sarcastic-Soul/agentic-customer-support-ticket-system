@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.api.dev import router as dev_router
 from app.config import settings
 from app.db.session import engine
+from app.ingress.web import router as web_ws_router
 from app.logging import configure_logging, get_logger
 
 configure_logging()
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Customer Support", lifespan=lifespan)
 app.include_router(dev_router)
+app.include_router(web_ws_router)
 
 
 @app.get("/health")
