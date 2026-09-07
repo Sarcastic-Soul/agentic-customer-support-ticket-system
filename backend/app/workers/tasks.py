@@ -1,7 +1,7 @@
-"""arq job functions. handle_message is the one job in Stage 2: it stands in
-for the orchestrator until Stage 4 replaces the echo with real reasoning -
-the point of this stage is proving the whole loop (webhook/WS -> ingress ->
-queue -> worker -> reply) works before any LLM is involved.
+"""arq job functions. handle_message runs the real agent graph (Stage 4) -
+it used to just echo the message back (Stage 2), which proved the queue/
+worker/adapter loop worked before any LLM was involved. That echo path is
+gone now; classify/retrieve/answer/respond do the actual work.
 """
 
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -10,9 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.channels.base import OutboundMessage
-from app.channels.registry import get_adapter
-from app.core.tickets import transition_ticket
+from app.agent.run import run_agent
 from app.db.session import async_session_factory
 from app.logging import get_logger
 from app.models import Message, Ticket
@@ -26,13 +24,9 @@ async def handle_message(
     """ctx is arq's per-job context, unused here. `session` is injectable so
     tests can run this against the shared test transaction instead of a real
     connection - arq itself never passes it, so production always opens its
-    own session and does the real commit.
-
-    An injected session only gets flush()-ed, never commit()-ed: the test
-    fixture binds it to a connection in savepoint mode for rollback-based
-    isolation, and calling commit() on that setup trips a SQLAlchemy
-    async/greenlet edge case (MissingGreenlet inside the follow-up autobegin).
-    flush() is sufficient - the caller's own session already sees the change.
+    own session and does the real commit. See app/agent/run.py's
+    `owns_session` for why this matters (MissingGreenlet on commit() against
+    a test's savepoint-joined session).
     """
     owns_session = session is None
     session_ctx: AbstractAsyncContextManager[AsyncSession] = (
@@ -58,38 +52,26 @@ async def handle_message(
             .limit(1)
         )
         ticket = ticket_result.scalar_one_or_none()
+        if ticket is None:
+            logger.warning("handle_message_no_ticket", message_id=message_id)
+            return
 
-        reply_text = f"echo: {message.body}"
-
-        reply = Message(
-            conversation=conversation,
-            role="assistant",
-            body=reply_text,
+        final_state = await run_agent(
+            session,
+            ticket_id=ticket.id,
+            conversation_id=conversation.id,
+            customer_id=conversation.customer_id,
             channel=message.channel,
-            direction="outbound",
+            external_thread_id=conversation.external_thread_id,
+            message_id=message.id,
+            latest_message=message.body,
+            owns_session=owns_session,
         )
-        session.add(reply)
 
-        if ticket is not None:
-            if ticket.status == "new":
-                await transition_ticket(session, ticket, "ai_working", actor_type="ai")
-            ticket.ai_turns += 1
-
-        if owns_session:
-            await session.commit()
-        else:
-            await session.flush()
-
-        adapter = get_adapter(message.channel)
-        await adapter.send(
-            OutboundMessage(
-                channel=adapter.channel,
-                external_thread_id=conversation.external_thread_id,
-                text=reply_text,
-            )
-        )
         logger.info(
             "handle_message_done",
             message_id=message_id,
-            ticket_id=ticket.id if ticket else None,
+            ticket_id=ticket.id,
+            intent=final_state["intent"],
+            outcome=final_state["outcome"],
         )

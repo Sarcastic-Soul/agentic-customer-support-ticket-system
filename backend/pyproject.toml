@@ -48,6 +48,10 @@ ignore = ["B008"]
 [tool.ruff.lint.per-file-ignores]
 # Dense literal seed data reads better on one line per record than wrapped.
 "app/seed/data.py" = ["E501"]
+# Import order here is load-bearing: app.config must import (and run its
+# load_dotenv side effect) before langgraph, or LANGGRAPH_STRICT_MSGPACK is
+# read as unset. See the module docstring.
+"app/agent/checkpoint.py" = ["I001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

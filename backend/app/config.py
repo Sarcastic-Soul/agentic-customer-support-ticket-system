@@ -1,11 +1,19 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env lives at the repo root (one .env for docker compose and the backend
 # alike), not in backend/ - resolve it relative to this file, not cwd, so it
 # is found the same way whether run from repo root, backend/, or alembic.
 _REPO_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+
+# pydantic-settings' env_file loads values into the Settings object only -
+# it does not export them to os.environ. A few things (LangGraph's
+# LANGGRAPH_STRICT_MSGPACK, read via os.getenv at import time) need a real
+# process env var, so load .env into the process too. Safe to call more than
+# once; load_dotenv never overrides a variable the shell already set.
+load_dotenv(_REPO_ROOT_ENV)
 
 
 class Settings(BaseSettings):

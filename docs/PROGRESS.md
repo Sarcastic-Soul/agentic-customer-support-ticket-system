@@ -223,7 +223,76 @@ an unnoticed one.
     (seed's `TRUNCATE ... CASCADE` cascades `kb_documents` into `kb_chunks`).
 
 ## Stage 4 — Orchestrator: classify, retrieve, answer
-**Status:** not started
+**Status:** done
+
+- Works: `app/llm/registry.py` - one `get_llm(role)` entrypoint, retry with
+  jitter, automatic fallback to the secondary provider, token usage and
+  latency captured on every call, `LLM_PROVIDER=stub` offline path with a
+  generic Pydantic-schema synthesizer for structured output
+  (`app/llm/stub.py`); `app/llm/pricing.py` estimates `est_cost_usd`.
+  LangGraph `StateGraph`: `prepare -> classify -> retrieve -> answer ->
+  respond` (`app/agent/graph.py`, `app/agent/nodes/`), backed by
+  `AsyncPostgresSaver` on its own psycopg pool (`app/agent/checkpoint.py`).
+  Every node writes an `agent_steps` row; `respond` finalizes `agent_runs`
+  with summed tokens/cost/latency. Prompts are files
+  (`app/agent/prompts/classify.md`, `answer.md`), loaded via
+  `load_prompt()`. `app/workers/tasks.py`'s `handle_message` now runs the
+  real graph - the Stage 2 echo is gone. 116 backend tests passing (10 new:
+  chunking, retrieval, LLM registry, worker/agent). **Live-verified against
+  real Gemini and Groq**, not just the stub: a real WS chat round trip for a
+  policy question got a grounded, cited answer (confirmed against
+  `agent_runs`/`agent_steps`); an off-topic message correctly triggered the
+  no-context fallback; automatic fallback from a broken Gemini key to Groq
+  was verified both as a live API call and as a mocked unit test.
+- Known broken: none.
+- Skipped: the keyword regex fast-path for trivial classifications (docs
+  mention it as a cost optimization; not needed for correctness, and Stage 4
+  has real API keys so there's no urgent quota pressure to justify it yet).
+- Notes:
+  - **De-risked the checkpointer before wiring it into the real graph**, per
+    the build-stages doc's advice - a throwaway 3-node spike proved
+    `AsyncPostgresSaver.setup()`, plain checkpointing, and
+    `interrupt()`/`Command(resume=...)` all work exactly as documented
+    (state survives between separate `ainvoke()` calls on the same
+    `thread_id`, resume picks up mid-node with the human's payload). Not
+    committed as permanent code; the confidence is what Stage 6 needed.
+  - **Real bug, would have silently broken any future `LANGGRAPH_STRICT_MSGPACK`-style
+    setting**: `LANGGRAPH_STRICT_MSGPACK` is read via a plain `os.getenv()`
+    inside `langgraph` at import time, not through anything in our
+    `Settings` object - pydantic-settings' `env_file` loads `.env` into the
+    typed `Settings` instance only, it never touches `os.environ`. Fixed by
+    calling `python-dotenv`'s `load_dotenv()` in `app/config.py` as a side
+    effect, and `app/agent/checkpoint.py` deliberately imports
+    `app.config` before importing `langgraph` (with a `ruff` per-file
+    `I001` ignore, since import-sorting would otherwise silently reorder
+    this back to broken).
+  - Gemini's `ChatGoogleGenerativeAI` returns `message.content` as a **list**
+    of content blocks (`[{"type": "text", "text": ..., "extras": {...}}]`,
+    including thinking-signature metadata on `gemini-3.8-flash`), while
+    Groq/OpenAI-style returns a plain `str`. Found by actually calling both
+    providers live before writing the extraction code, not by assuming
+    LangChain normalizes this - `registry._extract_text()` handles both
+    shapes.
+  - **Real bug in `llm/stub.py`'s structured-output synthesis**: checking
+    `field.default is not None` to decide whether a Pydantic field has a
+    default is wrong - pydantic v2's sentinel for "no default, required
+    field" is `PydanticUndefined`, not `None`, so the check was silently
+    treating every required field as "has a default" and assigning it the
+    `PydanticUndefined` sentinel itself. Manifested immediately when
+    actually printing a synthesized `Classification` instance
+    (`intent=PydanticUndefined`). Fixed using pydantic's own
+    `field.is_required()`.
+  - `respond_node` and `handle_message`/`run_agent` all follow the same
+    commit-vs-flush ownership rule established in Stage 2: an
+    externally-injected session (tests) only ever gets `flush()`-ed, never
+    `commit()`-ed. `run_agent(..., owns_session=...)` threads that decision
+    through explicitly rather than each node guessing.
+  - Stage 4 intentionally has no tool layer (Stage 5) and no escalation
+    queue (Stage 6): any intent that isn't in a small `KNOWLEDGE_INTENTS` set
+    (or that has no KB match) gets the honest "passing this to a specialist"
+    fallback rather than a guess. `order_status`, `refund_status` etc. will
+    start actually working once Stage 5's tools exist - right now they
+    correctly refuse rather than fabricate an order lookup.
 
 ## Stage 5 — Tools: orders and transactions
 **Status:** not started
