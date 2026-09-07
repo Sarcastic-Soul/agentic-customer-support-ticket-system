@@ -40,7 +40,7 @@ All thresholds live in one place:
 ```python
 # app/policy/thresholds.py
 INTENT_CONFIDENCE_MIN     = 0.60
-RETRIEVAL_SCORE_MIN       = 0.35     # post-RRF normalized
+RETRIEVAL_SCORE_MIN       = 0.55     # dense cosine similarity; see docs/decisions/0004
 MAX_AI_TURNS              = 4
 MAX_TOOL_CALLS            = 5
 AUTO_REFUND_CEILING       = Decimal("1000.00")   # INR

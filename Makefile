@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed dev api worker frontend demo eval test lint
+.PHONY: up down migrate seed ingest dev api worker frontend demo eval test lint
 
 BACKEND=cd backend && . .venv/bin/activate &&
 
@@ -16,6 +16,9 @@ migrate:
 
 seed:
 	$(BACKEND) python -m app.seed.run
+
+ingest:
+	$(BACKEND) python -m app.rag.ingest
 
 api:
 	$(BACKEND) uvicorn app.main:app --reload --port 8000
@@ -38,6 +41,7 @@ demo:
 	$(MAKE) up
 	$(MAKE) migrate
 	$(MAKE) seed
+	$(MAKE) ingest
 	$(MAKE) dev
 
 eval:

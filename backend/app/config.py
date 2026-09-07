@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     retrieval_top_k_dense: int = 20
     retrieval_top_k_sparse: int = 20
     retrieval_final_k: int = 5
-    retrieval_score_min: float = 0.35
+    retrieval_score_min: float = 0.55
     reranker_enabled: bool = False
 
     # agent policy

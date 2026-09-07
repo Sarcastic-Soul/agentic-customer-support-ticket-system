@@ -174,7 +174,53 @@ an unnoticed one.
     prototype scope says to leave alone.
 
 ## Stage 3 — RAG pipeline
-**Status:** not started
+**Status:** done
+
+- Works: heading-aware markdown chunker (`app/rag/chunk.py`, word-count token
+  approximation, 400/60 token target/overlap, heading path prepended to each
+  chunk); local `bge-small-en-v1.5` embeddings via `fastembed`
+  (`app/rag/embed.py`, `lru_cache`d model, confirmed real 384-dim vectors,
+  not a stub); `app/rag/ingest.py` chunks+embeds all active `kb_documents`
+  into `kb_chunks`, re-runnable (deletes a document's chunks before
+  re-inserting); hybrid retrieval (`app/rag/search.py`) - pgvector cosine
+  dense search + Postgres `tsvector` sparse search, fused with RRF, gated on
+  the best dense score so an out-of-scope query returns `[]` instead of a
+  low-relevance chunk; `POST /api/kb/search` debug endpoint showing dense,
+  sparse and fused results with scores side by side. 20 hand-written
+  on-topic queries (each retrieves the expected document) + 5 off-topic
+  queries (each correctly returns nothing) + a recall@5 aggregate check, all
+  as real pytest tests, not a one-off script. 111 backend tests passing.
+- Known broken: none.
+- Skipped: reranking (per `07-build-stages.md`, adequate without it at this
+  KB size).
+- Notes:
+  - **`RETRIEVAL_SCORE_MIN` was recalibrated from the blueprint's placeholder
+    0.35 to 0.55**, based on real measurement, not guesswork. Manually
+    testing the debug endpoint (which the DoD's "out-of-scope query returns
+    empty" requirement demanded doing, not just trusting the code) found
+    "what is the meaning of life" scoring 0.42 dense cosine similarity -
+    above the old 0.35 gate, so the un-calibrated system would have answered
+    from irrelevant KB chunks. This is a known property of BERT-style
+    sentence embeddings: short generic English sentences land in a
+    0.35-0.5 "baseline similarity" band regardless of actual relatedness.
+    Measured 5 off-topic queries (0.39-0.46) against 7 on-topic queries
+    (0.72-0.81) - clean gap, 0.55 sits in the middle. Full measurement table
+    in `docs/decisions/0004-retrieval-score-threshold.md`. This is exactly
+    the kind of number that looks arbitrary and invites being "corrected"
+    back to something more familiar-looking without the decision record.
+  - Made `dense_hits`/`sparse_hits` in `app/rag/search.py` public (dropped
+    the leading underscore) rather than reaching into "private" functions
+    from `app/api/kb.py` - the debug endpoint's whole purpose is exposing
+    that breakdown, so they're part of the module's real interface, not
+    internal helpers.
+  - Token counts are word-count-based (`len(text.split()) / 0.75`), not from
+    a real tokenizer - accurate enough to size ~400-token chunks sensibly for
+    FAQ-length KB documents; not worth a tokenizer dependency at this scale.
+    Revisit if KB documents grow long enough that chunk packing quality
+    starts to matter.
+  - `make ingest` added and wired into `make demo` after `make seed` - KB
+    chunks don't exist until ingestion runs, and are wiped on every reseed
+    (seed's `TRUNCATE ... CASCADE` cascades `kb_documents` into `kb_chunks`).
 
 ## Stage 4 — Orchestrator: classify, retrieve, answer
 **Status:** not started
