@@ -14,10 +14,9 @@ signature verification instead.
 | `POST` | `/channels/voice/upload` | none | Stage 10. Multipart audio. |
 | `POST` | `/dev/simulate/{channel}` | dev only | Injects a synthetic `InboundMessage`. Build this first. |
 
-Webhook contract: **acknowledge, then work.** The handler persists the message,
-dedupes on `(channel, external_message_id)`, spawns
-`asyncio.create_task(handle_message(id))`, and returns. No LLM call ever happens
-inside a request handler.
+Webhook contract: **acknowledge, then work.** The handler persists `raw_events`,
+dedupes on `(channel, external_message_id)`, enqueues `handle_message`, and
+returns. No LLM call ever happens inside a request handler.
 
 ## Customer-facing
 
@@ -33,7 +32,7 @@ inside a request handler.
 |---|---|---|
 | `GET` | `/api/v1/admin/tickets` | Filter: `status`, `channel`, `intent`, `priority`, `assigned_to`, `q`, date range. Paginated. |
 | `GET` | `/api/v1/admin/tickets/{id}` | Ticket + conversation + events + linked order/transactions. |
-| `GET` | `/api/v1/admin/tickets/{id}/runs` | Agent runs with their `steps` trace — the "why did it do that" view. |
+| `GET` | `/api/v1/admin/tickets/{id}/runs` | Agent runs with steps and tool calls — the "why did it do that" view. |
 | `PATCH` | `/api/v1/admin/tickets/{id}` | Change status, priority, assignee. Validated by the state machine. |
 | `POST` | `/api/v1/admin/tickets/{id}/note` | Internal note (not sent to the customer). |
 | `POST` | `/api/v1/admin/tickets/{id}/reply` | Human reply, delivered via the ticket's channel adapter. |
@@ -42,7 +41,7 @@ inside a request handler.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/v1/console/queue` | Queued escalations, priority-ordered. One queue, no skill routing. |
+| `GET` | `/api/v1/console/queue` | Queued escalations, priority-ordered, optional `skill` filter. |
 | `POST` | `/api/v1/console/escalations/{id}/claim` | Atomic claim (`FOR UPDATE SKIP LOCKED`). 409 if already claimed. |
 | `POST` | `/api/v1/console/escalations/{id}/release` | Return to the queue. |
 | `GET` | `/api/v1/console/escalations/{id}` | Handoff packet + transcript + suggested draft and action. |
@@ -71,10 +70,9 @@ inside a request handler.
 | `GET` | `/api/v1/admin/metrics/cost` | Tokens and estimated cost per ticket, per model, per day. |
 | `GET` | `/api/v1/admin/metrics/timeseries` | Daily series for the dashboard charts. |
 
-Skip: `/config/thresholds` and `/config/policies` as editable endpoints. Read the
-values from `policy/thresholds.py`, restart to change them. An admin screen that
-live-tunes constants is a nice demo and a day of work; the threshold sweep in the
-eval harness makes the same point for free.
+Thresholds and policy limits are read from `policy/thresholds.py` and changed by
+editing that file and restarting — no live-editable config endpoint. The threshold
+sweep in the eval harness makes the tuning point better than an admin screen would.
 
 ## Auth
 
@@ -89,7 +87,8 @@ three — a supervisor tier has nothing distinct to do in a prototype.
 
 ## Conventions
 
-- Errors: FastAPI's default `{"detail": ...}`. RFC 7807 problem details were in
-  the first draft; they buy nothing when one developer writes both ends.
-- Pagination: `?limit=&offset=`. Cursor pagination is not needed at this data size.
+- Errors: FastAPI's default `{"detail": ...}`. RFC 7807 problem details buy
+  nothing when one developer writes both ends.
+- Pagination: `?limit=&offset=`. Cursor pagination is not needed at this size.
+- Every response carries `X-Request-ID`, echoed into logs and `agent_runs`.
 - Path prefix `/api/v1` is kept for tidiness, not because a v2 is planned.

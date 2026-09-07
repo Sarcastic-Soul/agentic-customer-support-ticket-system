@@ -17,9 +17,11 @@
 6. **Local-first.** The whole system runs from `docker compose up` with no paid
    service. External providers (Twilio sandbox, Gmail) are optional adapters that
    can be swapped for a simulator.
-7. **Prototype scope.** One process, one database, no queue, no migrations, no
-   test pyramid. Rare edge-case bugs are acceptable. The demo path and the
-   escalation loop are not.
+7. **Prototype tolerance, not prototype infrastructure.** Rare edge-case bugs are
+   acceptable and not worth chasing; the demo path and the escalation loop are
+   not. That is a licence to stop polishing, not a licence to skip the
+   infrastructure that keeps the system honest — the queue, the migrations, the
+   audit tables and the eval harness all stay.
 
 ## Layer diagram
 
@@ -34,8 +36,8 @@ flowchart TB
 
     subgraph GW["2. Ingress gateway"]
         NORM["Normalize to InboundMessage"]
-        DEDUP["Dedupe on external_message_id"]
-        RAW["Persist message + raw payload"]
+        DEDUP["Idempotency + dedupe"]
+        RAW["Persist raw event"]
     end
 
     subgraph CORE["3. Conversation core (deterministic)"]
@@ -73,10 +75,11 @@ flowchart TB
 
     subgraph DATA["8. Storage"]
         PG[("PostgreSQL 18 + pgvector")]
+        RD[("Redis - queue, locks, pubsub")]
     end
 
     subgraph OBS["9. Observability"]
-        TR["agent_runs (steps JSONB)"]
+        TR["agent_runs / agent_steps / tool_calls"]
         MET["Metrics + cost"]
     end
 
@@ -96,6 +99,7 @@ flowchart TB
     CON -->|resume| ORCH
     ORCH --> TR
     CORE --> PG
+    GW --> RD
     TR --> MET
 ```
 
@@ -106,16 +110,18 @@ sequenceDiagram
     participant C as Customer
     participant A as Channel adapter
     participant G as Ingress gateway
-    participant O as Orchestrator (background task)
+    participant Q as Redis queue (arq)
+    participant O as Orchestrator
     participant T as Tools + Postgres
     participant D as Dashboard (WS)
 
     C->>A: "where is my order 10432?"
     A->>G: POST /channels/whatsapp/webhook
     G->>G: dedupe by external_message_id
-    G->>T: persist message row + raw payload
-    G->>O: asyncio.create_task(handle_message)
+    G->>T: persist raw event + message row
     G-->>A: 200 OK (fast ack, under 1s)
+    G->>Q: enqueue handle_message(message_id)
+    Q->>O: worker picks up
     O->>T: resolve identity, open/attach ticket
     O->>O: classify -> intent=order_status conf=0.93
     O->>T: get_order(10432) for customer 88
@@ -184,8 +190,9 @@ class InboundMessage(BaseModel):
 - Rejects duplicates: `INSERT ... ON CONFLICT DO NOTHING` on
   `(channel, external_message_id)`; if the insert affected 0 rows, drop the event.
   This one constraint is the difference between one reply and three.
-- Persists the message and its raw payload before anything else.
-- **Acknowledges immediately**, then spawns a background task. Never make a
+- Persists the raw payload before anything else, so a crash never loses a
+  customer message.
+- **Acknowledges immediately** and hands the work to the queue. Never make a
   provider webhook wait for an LLM.
 
 ### 3. Conversation core
@@ -194,15 +201,14 @@ class InboundMessage(BaseModel):
   verification step to the graph before any account-specific tool is allowed.
 - **Thread continuity:** map the external thread to an open `conversation`. A new
   conversation starts after an idle window (default 24h) or an explicit close.
-- **Ticket state machine** — one validating function in `core/tickets.py`, about
-  20 lines. Enough to stop the LLM inventing a status; not a state-machine library:
+- **Ticket state machine** (transitions validated in `core/tickets.py`):
 
 ```
 new -> ai_working -> ai_resolved -> closed
                   -> awaiting_customer -> ai_working
-                  -> escalated -> human_working -> closed
+                  -> escalated -> human_working -> human_resolved -> closed
                                                -> ai_working  (returned to AI)
-any -> closed
+any -> closed (timeout / customer abandon)
 ```
 
 ### 4. Orchestrator
@@ -235,54 +241,64 @@ Sending goes through the same adapter the customer used, so the customer sees on
 continuous thread.
 
 ### 8. Storage
-One PostgreSQL 18 with `pgvector` 0.8.6 — vector search is still an extension, it
-is not in PG core, despite what several 2026 blog posts claim. Nothing else. No
-Redis: the queue, the locks and the pub/sub it would have provided are an
-`asyncio` task, an in-process `dict` of `asyncio.Lock`, and a set of open
-WebSockets.
+One PostgreSQL 18 with `pgvector` 0.8.6 — vector search is still an extension, not
+in PG core, despite what several 2026 blog posts claim. Redis for the job queue,
+per-conversation locks and dashboard pub/sub. Nothing else.
 
 ### 9. Observability
-`agent_runs`, one row per inbound message, with the whole reasoning trace in a
-`steps` JSONB array — nodes, prompts, tool calls, tokens, latency. The dashboard
-and the eval harness both read it directly. One table, no analytics store, and it
-is the highest-value-per-line thing in the codebase.
+`agent_runs` (one per inbound message), `agent_steps` (one per node execution) and
+`tool_calls`, with token counts and estimated cost. The dashboard and the eval
+harness read them directly; there is no separate analytics store. This is the
+highest-value-per-line part of the codebase — the "why did the AI do that" screen
+and half the eval metrics come straight out of these three tables.
 
 ## Process topology
 
-**One process**, plus Postgres.
+Three processes, all in `docker compose`:
 
 | Process | Role |
 |---|---|
-| `api` (uvicorn) | HTTP + WebSocket, and the orchestrator running in `asyncio` background tasks. IMAP polling is a background loop in the same process. |
-| `postgres` | Database, vector index and LangGraph checkpoints |
+| `api` (uvicorn) | HTTP + WebSocket. Webhooks, dashboard API, console API. Never runs an LLM inline. |
+| `worker` (arq) | Consumes the queue, runs the orchestrator graph, sends outbound messages. |
+| `scheduler` (arq cron) | IMAP polling, stale-ticket sweeps. |
 
-The frontend is static files, served by FastAPI in production and by Vite's dev
-server in development.
+Plus `postgres` and `redis`. The frontend is static files, served by FastAPI in
+production and by Vite's dev server in development.
 
-## Why no queue
+## Why a queue
 
-The first draft specified Redis + `arq` + a worker process + a scheduler process.
-A queue buys durability (work survives a crash), horizontal scale, and
-retry-with-backoff. At prototype scale, none of those are worth the moving parts:
+Three things here are slow or unreliable and must not block a webhook: LLM calls
+(1-10s, on rate-limited free tiers), IMAP/SMTP, and retries. The queue also gives
+retry-with-backoff for free, which is the difference between "the free tier 429'd
+and the customer got nothing" and "the reply arrived twenty seconds late". On a
+free tier the second case is common, so this is not hypothetical.
 
-- **Fast webhook acknowledgement** is the real requirement, and
-  `asyncio.create_task` after persisting the message gives that. Twilio gets its
-  200 in milliseconds; the LLM call happens after.
-- **Retry** is a `for` loop with a sleep inside `llm/registry.py`, which is where
-  you want it anyway — the thing that fails is the LLM call, not the job.
-- **Durability**: if the process restarts mid-run, that message is not answered.
-  In a prototype you restart it, or the customer sends another message. Accept it.
-- **Concurrency safety** — two messages arriving for the same conversation at once
-  — is an in-process `dict[int, asyncio.Lock]` keyed by `conversation_id`.
+Two messages arriving for the same conversation at once are serialised by a Redis
+lock keyed on `conversation_id`; the second run re-reads history so it sees the
+first reply.
 
-Add the queue if and when the prototype becomes something real. The code is
-already shaped for it: message handling is one function taking a `message_id`,
-which is exactly what a job would call.
+## What "prototype" means here
 
-## What is deliberately missing
+**Stop polishing early. Do not skip structure.**
 
-Named so they read as trade-offs rather than oversights: no migrations
-(`schema.sql` + `make reset`), no queue, no worker process, no test pyramid
-(about 15 smoke tests), no CI, no load testing, no rate limiting beyond a
-per-sender email guard, no skill-based routing, no SLA cron, no reranking, no
-tracing UI. PII handling is a regex pass, not a subsystem."
+Acceptable — do not spend time on these:
+
+- Rare edge-case bugs. An odd email signature left in a transcript, a race that
+  needs three simultaneous messages to trigger, a metric off by one on a boundary.
+- Imperfect quoted-text stripping in email.
+- Rough UI: unstyled states, no empty-state illustrations, no animations.
+- No horizontal scale, no HA, no multi-tenancy, no rate limiting beyond a
+  per-sender email guard.
+- Thin test coverage outside the critical paths named in `07-build-stages.md`.
+
+Not acceptable — these stay, because each either *is* the project or prevents a
+class of failure that ruins a demo:
+
+- The queue, the migrations, the dedupe constraint, the audit and trace tables.
+- The escalation loop, the handoff packet, the `verify` node.
+- Policy authorization in code, and `customer_id` from trusted state.
+- The evaluation harness.
+
+Genuinely skipped, as scope rather than shortcuts: skill-based assignment
+routing, SLA breach cron, reranking, a self-hosted trace UI, RFC-7807 error
+bodies, cursor pagination, CI, and mypy.

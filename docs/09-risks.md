@@ -19,9 +19,8 @@ Mitigations:
   asked; it is normal engineering practice, not cheating.
 - Keyword fast paths that skip the LLM for trivial classifications.
 - Rehearse the demo on the same account the day before, at the same time of day.
-- There is no load test — it would burn a day of quota and prove nothing about
-  the design. If you ever want throughput numbers, run them on
-  `LLM_PROVIDER=stub`.
+- The Stage 12 concurrency check runs on `LLM_PROVIDER=stub`, never against a
+  real provider — it would burn a day of quota in minutes.
 
 ## R2 — Scope creep, especially voice
 **Likelihood: high.** Voice, live telephony, multilingual, sentiment analytics,
@@ -96,36 +95,38 @@ ones.
 ## R9 — Running out of time
 **Likelihood: medium.**
 
-Mitigations: every stage ends demoable; Stage 6 is a complete system on its own,
+Mitigations: every stage ends demoable; Stage 6 is a complete system on its own
 and everything after it is breadth; the cut list is decided in advance so the
-choice is not made under pressure the night before. Prototype scope is itself the
-main mitigation — no migrations, no queue, no test pyramid, no CI.
+choice is not made under pressure. Prototype tolerance helps too — accept niche
+bugs, skip the polish, but do not strip infrastructure to buy time. Cutting a
+whole stage is cheaper and more honest than half-building six.
 
-## R10 — Two Postgres pools in one process
-**Likelihood: low.** The app uses asyncpg via SQLAlchemy; the LangGraph
-checkpointer needs its own psycopg 3 pool. Two pools against one database, in one
-process, with default sizes.
+## R10 — Postgres connection exhaustion
+**Likelihood: medium.** Three processes (api, worker, scheduler), each with an
+asyncpg pool for the app *and* a psycopg 3 pool for the LangGraph checkpointer,
+plus HNSW queries and the dashboard. Defaults will not hold.
 
-Mitigation: set both pool sizes explicitly and small (5 each is plenty for a
-prototype). Not a load-testing problem — just do not leave them at defaults.
+Mitigation: size every pool explicitly and small (5-10 each), and run the Stage 12
+concurrency check on `LLM_PROVIDER=stub` early enough to fix what it finds. That
+check exists specifically to surface this.
 
 ## R11 — PII sent to a third-party LLM
 **Likelihood: low, impact high.** A card number or OTP in a customer message
 would otherwise go straight into a prompt.
 
-Mitigation, prototype-sized: a regex pass for card-like and OTP-like strings
-before the prompt, plus a prompt rule never to request such data. One smoke test.
-A full redact-and-restore subsystem with a separate `body_redacted` column was in
-the first draft; it is not worth the complexity here. Say so in the report — an
-acknowledged limitation reads better than an unnoticed one.
+Mitigations: redaction before every prompt, with `messages.body_redacted` storing
+exactly what the model saw; a test asserting no card-like or OTP-like string
+appears in a recorded prompt; and a prompt rule never to request such data.
+Detection is regex-based and will miss unusual formats — state that as a known
+limitation rather than claiming full coverage.
 
 ## R12 — Leaving the evaluation until last
 **Likelihood: medium, impact high.** It is the first thing to be cut and the thing
 most worth keeping.
 
 Mitigation: save every manual test as an eval case from Stage 3 onward. By
-Stage 11 the ~35 cases should mostly already exist, and that stage is then the
-harness and two ablations, not authoring a dataset from scratch.
+Stage 11 the ~50 cases should mostly already exist, and that stage becomes the
+harness and the ablations rather than authoring a dataset from scratch.
 
 
 ## R13 — A model is deprecated mid-project

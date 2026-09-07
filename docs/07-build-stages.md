@@ -1,8 +1,9 @@
 # Build Stages
 
-Prototype scope. Ship a working thing, not a hardened one. Rare edge-case bugs
-are acceptable; the demo path and the escalation loop are not allowed to be
-broken.
+Prototype scope: **stop polishing early, do not skip structure.** Rare edge-case
+bugs are acceptable and not worth chasing. The demo path, the escalation loop and
+the infrastructure that keeps the system honest are not negotiable. See
+`01-architecture.md#what-prototype-means-here` for where that line sits.
 
 No dates, no durations. Stages are ordered by dependency, and each ends with a
 checklist. Tick everything before moving on — a half-finished stage is how these
@@ -17,21 +18,22 @@ channels.
 
 ## Stage 0 — Foundations
 
-- [ ] Repo skeleton, `docker compose` with `pgvector/pgvector:pg18` and nothing else
-- [ ] FastAPI app, `Settings` from `.env`, `/health`
-- [ ] `backend/schema.sql` applied by `make reset`
-- [ ] `ruff` configured (skip mypy — it will slow you down more than it helps here)
+- [ ] Repo skeleton, `docker compose` with `pgvector/pgvector:pg18` and `redis`
+- [ ] FastAPI app, `Settings` from `.env`, `structlog`, `/health`
+- [ ] Alembic wired, first migration
+- [ ] `ruff` configured (skip mypy — it costs more time than it saves here)
+- [ ] `Makefile`: `up`, `migrate`, `seed`, `dev`, `demo`, `eval`
 
-**Done when:** `make reset && make dev` from a clean clone gives a healthy API on
-a fresh schema.
+**Done when:** `make up && make migrate && make dev` from a clean clone gives a
+healthy API on a migrated database.
 
 ---
 
 ## Stage 1 — Data model and seed
 
-- [ ] Tables from `03-data-model.md` in `schema.sql`
-- [ ] SQLAlchemy models
-- [ ] `core/tickets.py` — status transitions in one function
+- [ ] All tables from `03-data-model.md` as SQLAlchemy models + migration
+- [ ] `core/tickets.py` — validated status transitions
+- [ ] Tests: every legal and illegal ticket transition
 - [ ] Seed script with a fixed random seed; **edge cases written first**
 - [ ] `POST /dev/simulate/web` stores an inbound message (no agent yet)
 
@@ -45,10 +47,12 @@ customer 12 that are past their ETA" and get interesting rows back.
 - [ ] `ChannelAdapter` protocol, `InboundMessage`, `OutboundMessage`, `ResponseStyle`
 - [ ] Web adapter over WebSocket
 - [ ] Minimal Vite + React `/chat` page
-- [ ] Ingress: dedupe on `(channel, external_message_id)`, identity resolution,
-      conversation threading, ticket creation
-- [ ] Handling runs in an `asyncio` background task so the WebSocket/webhook
-      returns immediately
+- [ ] Ingress: raw event persistence, dedupe on
+      `(channel, external_message_id)`, identity resolution, conversation
+      threading, ticket creation
+- [ ] Redis + `arq` worker; message handling runs in the worker, not the request
+- [ ] Tests: dedupe drops a replayed message, identity resolution maps a phone
+      number to the right customer
 - [ ] Echo responder, so the loop is visible
 
 **Done when:** typing in the browser creates customer, conversation and ticket
@@ -66,13 +70,12 @@ This is the skeleton. Everything after swaps the echo for reasoning.
 - [ ] Dense search (pgvector HNSW) + sparse search (`tsvector`), fused with RRF
 - [ ] Score threshold that returns **nothing** rather than something bad
 - [ ] `POST /api/kb/search` debug endpoint showing dense / sparse / fused results
-- [ ] ~15 hand-written retrieval queries with expected document ids
+- [ ] ~20 hand-written retrieval queries with expected document ids
 
-**Done when:** the 15 queries mostly return the right document in the top 5, and
-an out-of-scope question returns an empty result instead of a bad chunk.
+**Done when:** recall@5 is around 0.85 on those queries, and an out-of-scope
+question returns an empty result instead of a low-relevance chunk.
 
-Do not chase a recall number. If it is obviously working on the debug endpoint,
-move on.
+Measure it once, then move on — do not spend days chasing the last few points.
 
 ---
 
@@ -82,12 +85,12 @@ move on.
       token/cost accounting
 - [ ] LangGraph graph: `prepare → classify → retrieve → answer → respond`
 - [ ] Postgres checkpointer (psycopg pool, `.setup()` called once)
-- [ ] `agent_runs` row written per message with the `steps` trace
+- [ ] `agent_runs` and `agent_steps` written for every run
 - [ ] Prompts as files in `agent/prompts/`
 
 **Done when:** a policy question in the web chat gets a grounded, cited answer,
-the run is visible in `agent_runs.steps`, and removing the Gemini key silently
-falls back to Groq.
+the run is fully visible in `agent_runs` / `agent_steps`, and removing the Gemini
+key silently falls back to Groq.
 
 Spike the checkpointer separately first — a three-node graph that pauses and
 resumes. It is the least familiar piece of the stack and you do not want to be
@@ -100,9 +103,12 @@ debugging it inside the real graph.
 - [ ] Tool registry with Pydantic argument models and a `ToolContext` carrying the
       trusted `customer_id`
 - [ ] Order tools and transaction tools from `04-agent-design.md`
-- [ ] `act` node: bounded tool loop (max 5 calls), structured tool errors
+- [ ] `act` node: bounded tool loop (max 5 calls), structured tool errors,
+      `tool_calls` persisted
 - [ ] `plan` node restricting the tool set per intent family
 - [ ] `policy/authorize()` — refund ceiling and cancellation window
+- [ ] Tests: `authorize()` decision table, and a tool called with another
+      customer's order number returns nothing
 
 **Done when:** "where is ORD-10432", "why did my payment fail" and "when will my
 refund land" are answered from real rows; a large refund request is denied by
@@ -116,7 +122,7 @@ nothing.
 - [ ] Deterministic trigger table + judgemental triggers
 - [ ] `verify` node (grounded / answers the question / policy safe), one repair pass
 - [ ] Handoff packet builder
-- [ ] `escalations` table, priority queue, atomic claim
+- [ ] `escalations` table, priority queue, atomic claim (`FOR UPDATE SKIP LOCKED`)
 - [ ] Console UI: queue list, work view with packet + transcript, send reply,
       return-to-AI, resolve
 - [ ] `interrupt()` / `Command(resume=...)` working end to end
@@ -141,6 +147,7 @@ else gets finished, this being solid is a complete result.
 - [ ] WhatsApp adapter: parse the form-encoded webhook, render within length limits
 - [ ] Phone-number identity resolution, unverified-sender path
 - [ ] Note the 24-hour service window in the code where it bites
+- [ ] Retry and delivery-status tracking on outbound
 
 **Done when:** a real WhatsApp message from your phone produces a ticket and a
 reply, Twilio's retry does not duplicate it, and with the tunnel down the
@@ -153,7 +160,7 @@ simulator.
 
 ## Stage 8 — Email channel
 
-- [ ] IMAP poll loop (`asyncio` task, 30-60s) against a throwaway Gmail with an
+- [ ] IMAP poller as an `arq` cron job (30-60s) against a throwaway Gmail with an
       app password
 - [ ] MIME parsing: prefer `text/plain`, strip quoted history and signatures
 - [ ] Threading via `Message-ID` / `In-Reply-To`
@@ -173,7 +180,7 @@ behind.**
 
 - [ ] JWT auth (argon2), `agent` and `admin` roles
 - [ ] Ticket list with filters; ticket detail with the reasoning timeline from
-      `agent_runs.steps`
+      `agent_runs` / `agent_steps` / `tool_calls`
 - [ ] Metrics: open/closed, AI resolution rate, escalation rate and reasons,
       channel breakdown, avg first response, cost per ticket
 - [ ] KB management: create/edit a document, re-embed on save
@@ -204,23 +211,28 @@ channel-agnostic design — say so in the report.
 
 The thing that turns a demo into a result. Keep it small; see `08-evaluation.md`.
 
-- [ ] ~35 labelled cases (collect these from Stage 3 onward as you test, not all
+- [ ] ~50 labelled cases (collect these from Stage 3 onward as you test, not all
       at the end)
 - [ ] `eval/run_eval.py` replays them through the real graph against a fresh seed
 - [ ] Metrics: intent accuracy, resolution rate, escalation precision/recall,
       hallucination rate, latency, cost per ticket
-- [ ] Two ablations: no-RAG, and no-`verify`
+- [ ] Ablations: no-RAG, no-`verify`, dense-only retrieval, all-tools-exposed
 - [ ] One threshold sweep on `INTENT_CONFIDENCE_MIN`
 
-**Done when:** `python eval/run_eval.py` prints a table you can paste into the
-report, and the ablations show what RAG and the verify node each contribute.
+**Done when:** `make eval` prints a table you can paste into the report, and the
+ablations show what RAG, the verify node and hybrid search each contribute.
 
 ---
 
 ## Stage 12 — Demo and writeup
 
-- [ ] Failure drills: no LLM key, no tunnel, tool raises — each must produce an
-      honest customer-facing message, never silence
+- [ ] Failure drills: no LLM key, no Redis, no tunnel, tool raises — each must
+      produce an honest customer-facing message, never silence
+- [ ] Concurrency sanity check: ~50 simultaneous conversations through the
+      simulator on `LLM_PROVIDER=stub`. This is not a load test; it exists to
+      find connection-pool sizing problems before the demo
+- [ ] PII check: a card-like or OTP-like string in a customer message never
+      appears in a recorded prompt
 - [ ] `make demo` — reset, seed, start everything, run the scripted scenario
 - [ ] README, exported diagrams, demo video, report
 
@@ -229,30 +241,44 @@ Stage 6 demo script.
 
 ---
 
+## Testing policy
+
+Not a test pyramid, and not nothing. Test the paths where a silent failure is
+expensive and hard to notice:
+
+- [ ] Ticket state transitions, legal and illegal
+- [ ] Message dedupe — a replayed `external_message_id` is dropped
+- [ ] Identity resolution across channels, including the unknown-sender path
+- [ ] `policy/authorize()` decision table
+- [ ] Tool customer-scoping — another customer's order returns nothing
+- [ ] PII redaction — nothing card-like or OTP-like reaches a prompt
+- [ ] Retrieval smoke test — the 20 queries from Stage 3
+
+Roughly 40 tests. Everything else is covered by the eval harness, which is the
+real regression net for agent behaviour. No CI, no coverage gate, no
+`testcontainers` — run `pytest` locally when you change one of the above.
+
 ## Deliberately not doing
 
-Prototype scope. These are all reasonable things to skip, and worth naming in the
-report as conscious trade-offs rather than oversights:
+Scope decisions, not shortcuts. Worth naming in the report as conscious
+trade-offs:
 
-- **A real test suite.** Around 15 smoke tests covering ticket transitions,
-  dedupe, identity resolution and `authorize()`. Nothing else. The eval harness is
-  the real regression net.
-- **Alembic migrations.** `schema.sql` + `make reset`.
-- **Redis, a job queue, a separate worker process.** One process,
-  `asyncio.create_task`. In-flight work is lost on restart; at this scale, fine.
-- **Load testing.** Would burn the free tier and prove nothing about the design.
-- **CI, mypy, coverage gates, RFC-7807 error bodies, cursor pagination.**
-- **Skill-based agent routing, SLA breach cron.** One queue, priority-ordered.
-- **Reranking.** Hybrid search alone is adequate.
-- **Langfuse.** `agent_runs.steps` covers it.
-- **PII redaction as a full subsystem.** A regex pass for card-like and OTP-like
-  strings before the prompt. Enough to demonstrate awareness, not a project.
+- **Skill-based assignment routing and SLA breach cron.** One priority-ordered
+  queue; the `skills` column exists and filters the view.
+- **Reranking.** Hybrid search is adequate.
+- **A self-hosted trace UI (Langfuse).** The ticket-detail reasoning timeline
+  covers the same need.
+- **CI, mypy, coverage gates, real load testing.**
+- **RFC-7807 error bodies, cursor pagination, live-editable threshold config.**
+- **Horizontal scale, HA, multi-tenancy, rate limiting** beyond a per-sender
+  email guard.
 
 ## Cut list, in order, if you fall behind
 
 1. Voice (Stage 10) — describe the design in the report instead
 2. Email (Stage 8) — WhatsApp plus web chat already proves multi-channel
 3. Dashboard metrics charts — keep the ticket list and the reasoning timeline
+4. The last two ablations (dense-only, all-tools) — keep no-RAG and no-verify
 
 **Never cut:** escalation, the `verify` node, the handoff packet, or the
 evaluation harness. Those four are the project.

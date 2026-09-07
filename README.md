@@ -29,14 +29,14 @@ Not "an LLM with a chat window". The system:
 Channel adapters (web chat, WhatsApp, email, later voice) contain no LLM; they
 normalize provider payloads into one canonical `InboundMessage` and render
 replies back. An ingress gateway dedupes and persists, acknowledges the webhook,
-then spawns a background task. That task runs a single channel-agnostic LangGraph
-state machine: prepare, classify, hard-route, plan, retrieve (hybrid RAG over
+then enqueues the work. A worker runs a single channel-agnostic LangGraph state
+machine: prepare, classify, hard-route, plan, retrieve (hybrid RAG over
 pgvector + Postgres full-text), act (bounded tool loop behind a policy layer),
 verify, then respond or escalate. Escalation pauses the graph at a checkpoint,
 writes a handoff packet to a priority queue, and a human agent picks it up in a
 console — replying through the same channel the customer used, or handing control
-back to the AI. Everything is one PostgreSQL database and one process, and every run is recorded
-with its full reasoning trace for the dashboard and the evaluation harness.
+back to the AI. Everything is one PostgreSQL database, and every run, step and tool call is
+recorded for the dashboard and the evaluation harness.
 
 Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
 
@@ -58,7 +58,7 @@ Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
 ## Stack
 
 Python 3.13 · FastAPI 0.141 · LangGraph 1.2 · PostgreSQL 18 + pgvector 0.8.6 ·
-SQLAlchemy 2.0 · Vite + React 19 + TanStack Router/Query
+Redis + arq · SQLAlchemy 2.0 + Alembic · Vite + React 19 + TanStack Router/Query
 + Tailwind + shadcn/ui · `gemini-3.8-flash` primary with Groq `openai/gpt-oss-120b`
 fallback · local `bge-small-en-v1.5` embeddings via fastembed ·
 Twilio WhatsApp sandbox · Gmail IMAP/SMTP · Parakeet TDT + Piper for voice.
@@ -73,9 +73,10 @@ FastAPI, so a Node server that only renders a shell is dead weight. Reasoning in
 
 ```bash
 cp .env.example .env          # add GEMINI_API_KEY and/or GROQ_API_KEY
-docker compose up -d          # postgres only
-make reset                    # apply schema.sql + seed synthetic data
-make dev                      # api + frontend
+make up                       # postgres + redis
+make migrate                  # alembic upgrade head
+make seed                     # synthetic customers, orders, transactions, KB
+make dev                      # api + worker + scheduler + frontend
 ```
 
 - Customer web chat: http://localhost:3000/chat
@@ -88,9 +89,15 @@ pipeline runs offline for tests and for developing the UI.
 
 ## Scope
 
-**This is a prototype.** One process, one database, no queue, no migrations, no
-test pyramid, no CI. Rare edge-case bugs are acceptable; the demo path and the
-escalation loop are not. Everything skipped is listed explicitly in
+**This is a prototype: stop polishing early, do not skip structure.** Rare
+edge-case bugs are acceptable and not worth chasing — a stray email signature in a
+transcript, a race needing three simultaneous messages, rough unstyled UI. The
+queue, the migrations, the dedupe constraint, the audit and trace tables, the
+escalation loop and the evaluation harness all stay, because each either *is* the
+project or prevents a failure that ruins a demo.
+
+What is genuinely out of scope — skill-based assignment routing, SLA cron,
+reranking, a trace UI, CI, mypy, real load testing — is listed in
 [`docs/07-build-stages.md`](docs/07-build-stages.md#deliberately-not-doing) so it
 reads as a trade-off rather than an oversight.
 

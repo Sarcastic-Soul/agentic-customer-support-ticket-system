@@ -38,12 +38,12 @@ noise and it appeared high in search results, so do not repeat it in the report.
 | Agent runtime | LangGraph | **1.2.11** | Explicit state graph, durable checkpoints, `interrupt()` / `Command(resume=...)`. |
 | Checkpointer | `langgraph-checkpoint-postgres` | **3.1.2** | See the psycopg note below. |
 | LLM adapters | `langchain-google-genai`, `langchain-groq` | current | Uniform message/tool interface so the provider is a config value. |
-| ORM | SQLAlchemy (async) | **2.0.52** | No Alembic — `schema.sql` + `make reset`. Synthetic data, one developer. |
+| ORM / migrations | SQLAlchemy (async) + Alembic | **2.0.52** | Migrations stay — schema churns across twelve stages and re-seeding by hand gets old fast. |
 | DB drivers | `asyncpg` **and** `psycopg[binary,pool]` 3.2+ | | Both, deliberately — see below. |
 | Validation / config | Pydantic v2 + `pydantic-settings` | | |
-| Background work | `asyncio.create_task` | stdlib | No Redis, no queue, no worker process. See `01-architecture.md`. |
+| Job queue | Redis + `arq` | **0.28.0** | Async-native, cron built in. See the maintenance-mode note below. |
 | Auth | `python-jose` JWT + `argon2-cffi` | | Local, free, enough for an admin console. |
-| Testing | `pytest`, `pytest-asyncio` | | ~15 smoke tests, not a test pyramid. The eval harness is the real regression net. |
+| Testing | `pytest`, `pytest-asyncio` | | Critical paths only (see `07-build-stages.md`), not a full pyramid. |
 | Lint | `ruff` | | No mypy — it costs more time than it saves at this size. |
 
 ### LangChain 1.x vs LangGraph — use LangGraph directly
@@ -67,21 +67,14 @@ Manual psycopg connections for the checkpointer need `autocommit=True` and
 checkpoint tables. Also set `LANGGRAPH_STRICT_MSGPACK=true`, which restricts
 checkpoint deserialization to safe types.
 
-### No queue, and no Redis
+### arq is in maintenance mode
 
-The first draft used Redis + `arq`. Dropped: at prototype scale the queue buys
-durability and horizontal scale, neither of which this project needs, in exchange
-for two extra processes and a Docker service. Message handling is
-`asyncio.create_task(handle_message(message_id))` after the message row is
-committed — the webhook still acks in milliseconds, which was the actual
-requirement. Retry lives in `llm/registry.py`, where the thing that actually fails
-is. Per-conversation concurrency is a `dict[int, asyncio.Lock]`.
-
-Cost of this choice: work in flight is lost if the process restarts. Accepted.
-
-`handle_message(message_id)` is deliberately shaped like a job function, so adding
-`arq` or `taskiq` later is an afternoon, not a rewrite. (For reference if you ever
-do: `arq` 0.28.0 is maintenance-only; `taskiq` is the actively developed option.)
+`arq` 0.28.0 (April 2026) is maintenance-only. For this project that is fine — it
+does async jobs, retries and cron in a couple of hundred lines of integration, and
+the feature set is frozen rather than broken. Keep the queue behind a thin
+`app/workers/queue.py` interface so swapping to **taskiq** (actively developed,
+FastAPI-friendly) is an afternoon rather than a rewrite. Do not swap
+pre-emptively.
 
 ---
 
@@ -92,9 +85,10 @@ do: `arq` 0.28.0 is maintenance-only; `taskiq` is the actively developed option.
 | Primary DB | PostgreSQL | **18** (18.6) | Current stable. PG19 is in Beta 3 — do not use it. |
 | Vector search | `pgvector` | **0.8.6** | Still required; not in PG core. Minimum **0.8.2** regardless: earlier versions have CVE-2026-3172, a buffer overflow in parallel HNSW builds that can leak data from other relations. 0.8.x also brings iterative scans for filtered queries, parallel HNSW builds and `halfvec`. |
 | Keyword search | Postgres `tsvector` + GIN | | Second half of hybrid retrieval. Order numbers and error codes are exactly what dense embeddings miss. |
+| Cache / queue / locks / pubsub | Redis | 7.x | |
 
 
-Docker image: `pgvector/pgvector:pg18`. That plus the schema file is the entire
+Docker image: `pgvector/pgvector:pg18`, plus `redis:7-alpine`. That is the whole
 `docker-compose.yml`.
 
 ---
@@ -140,8 +134,9 @@ EmbeddingGemma-300M is the interesting 2026 small model, but the Python
 worth adding a `sentence-transformers` + PyTorch dependency tree for it. Revisit
 only if retrieval recall stalls below target in Stage 3.
 
-Reranking: skipped. Hybrid search is adequate and a cross-encoder adds a
-dependency and latency for a small win.
+Reranking: skipped unless retrieval quality proves to be the bottleneck. Hybrid
+search is adequate, and a cross-encoder adds a dependency and latency for a small
+win. If you do want it: `fastembed`'s `TextRerank`, or `flashrank`.
 
 ### Speech (Stage 10, deferred)
 
@@ -243,9 +238,9 @@ unplugged. Build the simulator *before* the real adapter, every time.
 
 | Concern | Choice |
 |---|---|
-| Traces | One table, `agent_runs`, with the trace in a `steps` JSONB array. Powers the dashboard and the eval harness. Required. |
-| Trace UI | None. Langfuse was in the first draft; `agent_runs.steps` rendered on the ticket page covers it. |
-| Logs | Standard `logging`, with `ticket_id` in the message. `structlog` is not worth the setup here. |
+| Traces | Own tables: `agent_runs`, `agent_steps`, `tool_calls`. Required — they power the dashboard and half the eval metrics. |
+| Trace UI | None. A self-hosted Langfuse would be nice; the ticket-detail reasoning timeline covers the same need. |
+| Logs | `structlog` JSON to stdout with `run_id` and `ticket_id` on every line. Worth the twenty minutes — you will be reading these constantly. |
 
 ---
 
@@ -253,14 +248,14 @@ unplugged. Build the simulator *before* the real adapter, every time.
 
 ```
 ai-customer-support/
-├─ docker-compose.yml              # postgres 18 + pgvector. That's it.
-├─ Makefile                        # reset, dev, seed, demo
+├─ docker-compose.yml              # postgres 18 + pgvector, redis
+├─ Makefile                        # up, migrate, seed, dev, demo, eval
 ├─ .env.example
 ├─ docs/
 │  └─ decisions/                   # one short file per non-obvious choice
 ├─ backend/
 │  ├─ pyproject.toml
-│  ├─ schema.sql                   # the whole schema; no migrations
+│  ├─ alembic/
 │  └─ app/
 │     ├─ main.py                   # FastAPI app factory
 │     ├─ config.py                 # Settings
@@ -284,7 +279,7 @@ ai-customer-support/
 │     ├─ llm/                      # registry, fallback, stub, cost accounting
 │     ├─ hil/                      # escalation queue, handoff packet, console API
 │     ├─ api/                      # dashboard + console REST/WS routes
-│     ├─ tasks.py                  # handle_message(), IMAP poll loop
+│     ├─ workers/                  # queue.py (arq behind an interface), tasks, cron
 │     └─ seed/
 ├─ frontend/                       # Vite + React + TanStack Router
 │  └─ src/routes/                  # /chat, /console, /admin
@@ -296,11 +291,10 @@ ai-customer-support/
 
 ## Deliberately excluded
 
-- **Redis, job queues, worker processes.** One process, `asyncio` tasks.
-- **Alembic.** `schema.sql` + `make reset`.
-- **A test pyramid, CI, mypy, coverage gates, load testing.** ~15 smoke tests on
-  ticket transitions, dedupe, identity resolution and `authorize()`; the eval
-  harness catches the rest.
+- **A full test pyramid, CI, mypy, coverage gates.** Tests cover the critical
+  paths named in `07-build-stages.md`; the eval harness catches the rest.
+- **Skill-based assignment routing, SLA breach cron, reranking, a trace UI,
+  RFC-7807 error bodies, cursor pagination.** Scope, not shortcuts.
 - **Kubernetes, cloud, managed vector DBs.** pgvector is enough at this scale.
 - **CrewAI / AutoGen.** Role-play frameworks hide control flow; you need to show
   the loop in a report and debug it at 2am.

@@ -80,10 +80,10 @@ P3  normal order/product questions                                    -> 8 h
 P4  feedback, general enquiry                                         -> 24 h
 ```
 
-Priority sets queue order, and that is all it does — there is no SLA column and no
-breach-checking cron. Escalating `abusive_or_distress` or `legal_or_regulatory`
-always lifts priority to at least P2. The SLA table above is a design statement
-for the report, not code.
+Priority sets queue order, and the console shows elapsed time against these
+targets. There is no breach-checking cron job — the SLA column above is a design
+statement plus a display, not a scheduler. Escalating `abusive_or_distress` or
+`legal_or_regulatory` always lifts priority to at least P2.
 
 ## The handoff packet
 
@@ -97,6 +97,7 @@ first 80% of the work".
   "escalation_reason": "policy_limit_exceeded",
   "reason_detail": "Refund of 4200 INR exceeds auto-approval ceiling of 1000 INR",
   "priority": "P2",
+  "required_skill": "refunds",
   "customer": {
     "id": 88, "name": "R. Sharma", "tier": "priority",
     "locale": "en-IN", "verified": true,
@@ -137,8 +138,8 @@ or the entity list — those must be facts.
 
 ## Human agent console flow
 
-1. **Queue view.** Sorted by priority then age, with a reason-code badge.
-   Live-updated over WebSocket.
+1. **Queue view.** Sorted by priority then age, with a reason-code badge, elapsed
+   time and a skill filter. Live-updated over WebSocket.
 2. **Claim.** `FOR UPDATE SKIP LOCKED`, sets `claimed_by`, moves the ticket to
    `human_working`, and stops AI auto-replies for it. Keep the `SKIP LOCKED` — it
    is one clause and it removes a race you would otherwise spend an evening on.
@@ -190,8 +191,8 @@ instrumentation for them.
 - **Escalation recall:** of tickets the AI resolved, how many *should* have been
   escalated (the dangerous number — a false resolution costs more than a false
   escalation).
+- Time to claim, and time to human resolution.
 - Return-to-AI rate (how often the human hands control back).
 - Draft acceptance rate: how often the human sends the suggested reply unedited or
-  lightly edited. Track this by hand across the demo runs — it is the clearest
-  evidence that the AI does useful work even when it escalates, and it does not
-  need a metrics pipeline to be worth reporting.
+  lightly edited. The clearest evidence that the AI does useful work even when it
+  escalates.

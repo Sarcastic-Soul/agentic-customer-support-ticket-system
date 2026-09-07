@@ -13,22 +13,42 @@ ticket to a human with a full context packet, and can take it back afterwards.
 it were made deliberately. Start with `docs/01-architecture.md` and
 `docs/07-build-stages.md`.
 
-## Scope: this is a prototype
+## Scope: prototype tolerance, not prototype infrastructure
 
-The single most important thing to internalise. This project optimises for
-build speed and a working demo, not for production robustness.
+The most important thing to internalise, and the easiest to get wrong in both
+directions. The rule is **stop polishing early, do not skip structure.**
 
-- Rare edge-case bugs are **acceptable**. The demo path and the escalation loop
-  are not.
-- Do not add tests beyond the ~15 smoke tests. The eval harness is the regression net.
-- Do not add migrations, a job queue, Redis, a worker process, CI, mypy,
-  coverage gates, rate limiters, or abstraction layers "for later".
+**Tolerate — do not spend time here:**
+
+- Rare edge-case bugs: a stray email signature in a transcript, a race needing
+  three simultaneous messages, a metric off by one on a boundary.
+- Imperfect quoted-text stripping in email. 80% correct is done.
+- Rough UI — unstyled states, no animations, no empty-state art.
+- No horizontal scale, HA, multi-tenancy, or rate limiting beyond a per-sender
+  email guard.
 - Do not refactor working code for elegance.
-- `docs/07-build-stages.md#deliberately-not-doing` is the authoritative list of
-  what is intentionally missing. If something on that list looks like an
-  oversight, it is not — leave it alone.
 
-When in doubt: the simpler thing that works.
+**Keep — these are not optional:**
+
+- Redis + `arq`, the worker and scheduler processes, Alembic migrations.
+- `raw_events`, `refunds`, `shipments`, `agent_steps`, `tool_calls` as real
+  tables. The eval harness queries across them.
+- PII redaction into `messages.body_redacted`.
+- The escalation loop, the handoff packet, the `verify` node, the eval harness.
+- Tests on the critical paths listed in `docs/07-build-stages.md#testing-policy`
+  (~40 tests): ticket transitions, dedupe, identity resolution, `authorize()`,
+  tool customer-scoping, PII, retrieval smoke.
+
+**Genuinely out of scope:** skill-based assignment routing (the column exists;
+no algorithm), SLA breach cron, reranking, a trace UI, CI, mypy, coverage gates,
+real load testing, RFC-7807 errors, cursor pagination.
+
+Full reasoning in `docs/decisions/0003-prototype-scope.md`. If something looks
+like an oversight, check that file before "fixing" it.
+
+If time runs short, **cut a whole stage** from the cut list in
+`docs/07-build-stages.md`. Never strip infrastructure to buy time — that trades a
+few hours for a class of bug that is invisible until it happens during a demo.
 
 ## Non-negotiables
 
@@ -53,10 +73,11 @@ Short list. Everything else is negotiable; these are not, because each one eithe
    deprecate models with ~2 months' notice; two have already died during planning.
 7. **Bounded loops.** `MAX_TOOL_CALLS = 5`, `MAX_AI_TURNS = 4`. An unbounded agent
    loop burns a free tier in under a minute.
-8. **Webhooks acknowledge before doing work.** Persist, `asyncio.create_task`,
+8. **Webhooks acknowledge before doing work.** Persist the raw event, enqueue,
    return. No LLM call inside a request handler.
-9. **`agent_runs.steps` is written for every run.** It powers the "why did the AI
-   do that" screen and the eval harness. Highest value per line in the codebase.
+9. **`agent_runs`, `agent_steps` and `tool_calls` are written for every run.**
+   They power the "why did the AI do that" screen and half the eval metrics.
+   Highest value per line in the codebase.
 
 ## Architecture in one paragraph
 
@@ -66,8 +87,9 @@ channel-agnostic LangGraph state machine does all reasoning: `prepare → classi
 hard_route → plan → retrieve → act → verify → respond | escalate`. Tools are typed
 Python functions behind a policy layer. Escalation pauses the graph at
 `interrupt()`; a human works it in the console and either resolves or returns
-control with a note, which resumes the graph from its checkpoint. One Postgres,
-one process.
+control with a note, which resumes the graph from its checkpoint. Webhooks persist
+and enqueue; an `arq` worker runs the graph. One Postgres, one Redis, three
+processes (`api`, `worker`, `scheduler`).
 
 Do **not** build per-channel agents. That was the first draft's mistake and
 `docs/00-plan-review.md` explains why at length.
@@ -75,12 +97,12 @@ Do **not** build per-channel agents. That was the first draft's mistake and
 ## Commands
 
 ```bash
-make reset     # drop db, apply backend/schema.sql, seed synthetic data
-make dev       # uvicorn + vite dev server
-make seed      # re-seed without dropping
-make demo      # reset + start + run the scripted demo scenario
+make up        # docker compose: postgres 18 + pgvector, redis
+make migrate   # alembic upgrade head
+make seed      # synthetic customers, orders, transactions, KB
+make dev       # api + worker + scheduler + vite dev server
+make demo      # reset, start, run the scripted demo scenario
 make eval      # python eval/run_eval.py
-docker compose up -d   # postgres 18 + pgvector, nothing else
 ```
 
 `LLM_PROVIDER=stub` runs the whole pipeline offline with a deterministic fake
@@ -88,13 +110,13 @@ model — use it for UI work and anything that would otherwise burn quota.
 
 ## Stack facts that bite
 
-- **Two Postgres pools, one database.** The app uses asyncpg (SQLAlchemy);
-  `langgraph-checkpoint-postgres` requires psycopg 3. This is intentional. Keep
-  both pool sizes small and explicit.
+- **Two Postgres pools per process, one database.** The app uses asyncpg
+  (SQLAlchemy); `langgraph-checkpoint-postgres` requires psycopg 3. Intentional.
 - Checkpointer connections need `autocommit=True`, `row_factory=dict_row`, and a
   one-time `.setup()`. Set `LANGGRAPH_STRICT_MSGPACK=true`.
-- **No Alembic.** Schema changes mean editing `backend/schema.sql` and running
-  `make reset`. Never hand-write a migration.
+- **Alembic is used.** Schema changes get a migration; `make migrate` applies it.
+- Three processes each hold two pools (asyncpg + psycopg). Size every pool
+  explicitly and small — defaults will exhaust Postgres.
 - **pgvector minimum 0.8.2** — CVE-2026-3172 (parallel HNSW build overflow).
 - PostgreSQL 18 does **not** have native vector search despite what several 2026
   blog posts claim. pgvector is required. Do not repeat that claim anywhere.
@@ -125,7 +147,7 @@ Three files, all cheap, all of which make the final report mostly write itself:
   decision, reasoning, consequences. Only for choices someone might reasonably
   question later.
 - **`eval/dataset/tickets.jsonl`** — every manual test you run gets saved as a
-  case, from Stage 3 onward. Do not leave the dataset until Stage 11.
+  case, from Stage 3 onward. Target ~50. Do not leave the dataset until Stage 11.
 
 ## Git
 
