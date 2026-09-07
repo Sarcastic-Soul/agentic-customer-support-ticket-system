@@ -61,6 +61,12 @@ class StubChatModel(BaseChatModel):
     ) -> ChatResult:
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=STUB_TEXT))])
 
+    def bind_tools(self, tools, **kwargs) -> "StubChatModel":
+        # The stub never actually calls a tool - it always returns the canned
+        # response with no tool_calls, which act_node correctly reads as
+        # "no more tools needed" and ends the loop.
+        return self
+
     def with_structured_output(
         self, schema: type[BaseModel], *, include_raw: bool = False, **kwargs
     ) -> Runnable:

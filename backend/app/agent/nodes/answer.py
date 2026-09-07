@@ -1,3 +1,4 @@
+import json
 import re
 
 from langchain_core.runnables import RunnableConfig
@@ -23,6 +24,8 @@ def _format_history(history: list[dict]) -> str:
 
 
 def _format_context(retrieved: list[dict]) -> str:
+    if not retrieved:
+        return "(none retrieved)"
     return "\n\n".join(
         f"[{i + 1}] ({chunk['document_title']}"
         f"{' > ' + chunk['heading_path'] if chunk['heading_path'] else ''})\n"
@@ -31,16 +34,25 @@ def _format_context(retrieved: list[dict]) -> str:
     )
 
 
+def _format_tool_results(tool_results: list[dict]) -> str:
+    if not tool_results:
+        return "(no tools were called)"
+    return "\n\n".join(
+        f"{r['tool']}({r['args']}) ->\n{json.dumps(r['result'], default=str)}"
+        for r in tool_results
+    )
+
+
 async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
     session = config["configurable"]["session"]
 
-    # Stage 4 has no tool layer yet (Stage 5) and no escalation queue yet
-    # (Stage 6) - without retrieved knowledge there is nothing grounded to
-    # answer from, so the honest move is the fallback reply, not a guess.
-    if not state["retrieved"]:
+    # Stage 6's escalation queue doesn't exist yet - without either KB
+    # context or tool results there's nothing grounded to answer from, so
+    # the honest move is the fallback reply, not a guess.
+    if not state["retrieved"] and not state["tool_results"]:
         await record_step(
             session, run_id=state["run_id"], node="answer",
-            output={"skipped": True, "reason": "no retrieved context"},
+            output={"skipped": True, "reason": "no retrieved context and no tool results"},
         )
         return {"draft": NO_CONTEXT_REPLY, "citations": [], "outcome": "no_context"}
 
@@ -48,6 +60,7 @@ async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
         "answer",
         intent=state["intent"],
         context=_format_context(state["retrieved"]),
+        tool_results=_format_tool_results(state["tool_results"]),
         history=_format_history(state["history"]),
         message=state["latest_message"],
     )

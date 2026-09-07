@@ -41,8 +41,15 @@ class AgentState(TypedDict):
     intent: str | None
     intent_confidence: float | None
 
+    # plan
+    tool_group: str | None  # orders | transactions | knowledge | none
+
     # retrieve
     retrieved: list[RetrievedChunkDict]
+
+    # act
+    tool_results: list[dict]
+    tool_call_count: int
 
     # answer
     draft: str | None

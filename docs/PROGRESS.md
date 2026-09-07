@@ -295,7 +295,78 @@ an unnoticed one.
     correctly refuse rather than fabricate an order lookup.
 
 ## Stage 5 — Tools: orders and transactions
-**Status:** not started
+**Status:** done
+
+- Works: tool registry (`app/tools/registry.py`) - `@register_tool` decorator,
+  `ToolContext` (trusted `customer_id`, never model-supplied), `execute_tool()`
+  records every call as a `tool_calls` row regardless of outcome. 7 order
+  tools + 6 transaction tools (`app/tools/orders.py`, `transactions.py`),
+  every lookup scoped to `ctx.customer_id`. `app/policy/authorize.py` -
+  three typed decision functions (cancel/return/refund), enforced inside the
+  tool wrapper, not the prompt. `plan` node restricts the tool set to the
+  intent's family before the model sees any schema. `act` node: bounded
+  tool-calling loop (`MAX_TOOL_CALLS`), each round is one `agent_steps` row,
+  each tool call one `tool_calls` row. `answer` node now grounds replies in
+  both retrieved KB chunks and tool results. Graph is now
+  `prepare -> classify -> plan -> retrieve -> act -> answer -> respond`.
+  138 backend tests passing (24 new: policy decision table, order/transaction
+  tool scoping and denial paths, LLM registry tool-calling and quota
+  handling). **Live-verified against real Gemini/Groq with real seeded
+  data**, not just tests: "where is ORD-10003" answered from `track_shipment`;
+  a 4200 INR refund on a genuine duplicate-charge order was correctly denied
+  by policy (`authorized=false`, `deny_reason` recorded) and the model
+  relayed the denial honestly instead of promising it; asking about another
+  customer's order (as a different authenticated customer) returned nothing
+  from both `get_order` and `track_shipment`, and the model proactively
+  listed the customer's *own* real orders instead of leaking anything.
+- Known broken: none.
+- Skipped: category-scoped retrieval for order/transaction intents (docs
+  describe "policy chunks only"); the KB is 8 documents, so unscoped hybrid
+  search already surfaces the right chunk - scoping is a Stage-3-level
+  concern to revisit only if the KB grows enough for it to matter.
+  `generate_invoice` returns a stub URL, no real document generation.
+- Notes:
+  - **Real, live-discovered design flaw, fixed**: each graph node builds its
+    own `LLMClient`, so when Gemini's free tier was genuinely exhausted
+    mid-test (`gemini-3.8-flash`: 20 requests/day), *every* node independently
+    retried the same exhausted quota `llm_max_retries` (3) times with
+    backoff before falling back to Groq - one reply took **235 seconds**.
+    A quota/rate-limit error is not transient in the way a timeout is;
+    retrying it is pure waste. Fixed by detecting quota errors
+    (`_is_quota_exhausted()`, string-matched across both SDKs' differing
+    exception shapes - documented as a deliberate simplification) and
+    skipping straight to the fallback provider. Re-verified live against the
+    same still-exhausted quota: **112 seconds**, and every retry log line now
+    shows a single attempt before falling back, not three. Also added a
+    mocked unit test so this doesn't require burning real quota to verify
+    again. This is exactly the kind of bug that only a live end-to-end pass
+    finds - all 24 new tests passed against `LLM_PROVIDER=stub` throughout
+    the entire time this was broken.
+  - The remaining live latency under sustained quota exhaustion (multiple
+    reason-role calls across `act`'s tool rounds and `answer`, each eating
+    one failed-Gemini-then-Groq round trip) is expected and bounded by
+    `MAX_TOOL_CALLS`, not a bug - noted here so a future "why is this slow"
+    investigation starts from the right place.
+  - `LLMClient.ainvoke()` extended to accept `messages: list[BaseMessage]`
+    (not just a bare prompt string) and `tools: list[BaseTool]`, returning
+    `tool_calls` on the outcome - needed for the `act` node's multi-turn
+    tool-calling loop, verified live on both providers
+    (`.bind_tools()` + `.tool_calls`) before writing the loop around it, same
+    approach as Stage 4's structured-output verification.
+  - `StubChatModel.bind_tools()` needed an explicit override (`BaseChatModel`
+    raises `NotImplementedError` by default) - returns `self` unchanged,
+    since the stub never actually calls a tool; `act_node` reads the
+    resulting empty `tool_calls` as "no more tools needed" and ends the loop
+    cleanly, consistent with how the stub already resolves to the honest
+    fallback path elsewhere.
+  - Live verification needed real seeded customers reachable over the *web*
+    channel, but the seed script only creates `whatsapp`/`email`
+    `customer_identities` (there's no web channel in seed data by
+    construction - a browser session id isn't seedable in advance). Bridged
+    this for testing by inserting a `customer_identities` row
+    (`channel='web'`) pointing a throwaway session id at a known seeded
+    customer. Not a code path - a manual testing step, discarded on the next
+    `make seed`.
 
 ## Stage 6 — Escalation and human console (MILESTONE)
 **Status:** not started

@@ -13,10 +13,11 @@ is returned so callers (the graph nodes) can record it into agent_steps.
 import asyncio
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from pydantic import BaseModel
@@ -50,6 +51,7 @@ class LLMOutcome:
     tokens_out: int
     latency_ms: int
     attempts: int
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 class AllProvidersFailedError(RuntimeError):
@@ -92,6 +94,23 @@ def _extract_text(content: object) -> str:
     return str(content)
 
 
+_QUOTA_MARKERS = (
+    "resource_exhausted", "rate_limit", "rate limit", "429", "quota",
+)
+
+
+def _is_quota_exhausted(exc: Exception) -> bool:
+    """String-matched rather than an exception-class check: Gemini and Groq
+    (OpenAI-style) raise different exception hierarchies for the same kind
+    of failure, and matching on the message is simpler than depending on
+    both SDKs' internal error taxonomies. A known simplification - a false
+    positive just means an unnecessary but harmless early fallback; a false
+    negative just means the old (slow but correct) retry-then-fallback path.
+    """
+    text = str(exc).lower()
+    return any(marker in text for marker in _QUOTA_MARKERS)
+
+
 def _usage(message: AIMessage) -> tuple[int, int]:
     usage = getattr(message, "usage_metadata", None)
     if not usage:
@@ -116,7 +135,11 @@ class LLMClient:
             ]
 
     async def ainvoke(
-        self, prompt: str, *, structured: type[BaseModel] | None = None
+        self,
+        prompt: str | list[BaseMessage],
+        *,
+        structured: type[BaseModel] | None = None,
+        tools: list[BaseTool] | None = None,
     ) -> LLMOutcome:
         errors: list[Exception] = []
         attempts = 0
@@ -127,6 +150,8 @@ class LLMClient:
                 start = time.monotonic()
                 try:
                     chat = _build_model(provider, model)
+                    if tools is not None:
+                        chat = chat.bind_tools(tools)
 
                     if structured is not None:
                         runnable = chat.with_structured_output(structured, include_raw=True)
@@ -157,10 +182,12 @@ class LLMClient:
                         tokens_out=tokens_out,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         attempts=attempts,
+                        tool_calls=list(getattr(message, "tool_calls", []) or []),
                     )
 
                 except Exception as exc:  # noqa: BLE001 - genuinely any provider failure retries
                     errors.append(exc)
+                    exhausted = _is_quota_exhausted(exc)
                     logger.warning(
                         "llm_call_failed",
                         role=self.role,
@@ -168,7 +195,19 @@ class LLMClient:
                         model=model,
                         attempt=attempt + 1,
                         error=str(exc),
+                        quota_exhausted=exhausted,
                     )
+                    if exhausted:
+                        # A quota/rate-limit error will not clear on retry
+                        # within the seconds this request has to live -
+                        # Gemini's own RetryInfo has said as much as 60s.
+                        # Move straight to the fallback provider rather than
+                        # burning the remaining retries and their backoff
+                        # sleeps on a call guaranteed to fail again. Found by
+                        # live-testing against a real exhausted free tier
+                        # (see docs/PROGRESS.md Stage 5) - the naive retry
+                        # loop took 235s for one reply before this fix.
+                        break
                     if attempt + 1 < settings.llm_max_retries:
                         await asyncio.sleep(min(2**attempt + random.random(), 10))
 

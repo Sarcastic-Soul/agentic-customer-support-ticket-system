@@ -6,25 +6,20 @@ from app.agent.state import AgentState
 from app.agent.steps import record_step
 from app.rag.search import hybrid_search
 
-# Intents where a knowledge-base answer even makes sense. Everything else
-# (order/refund status, chitchat) either needs a tool (Stage 5) or no
-# retrieval at all - skipping retrieval for them avoids a wasted embedding
-# call and, more importantly, avoids surfacing an irrelevant policy chunk.
-KNOWLEDGE_INTENTS = {
-    "policy_question", "product_question", "account_issue",
-    "refund_status", "refund_request", "order_cancel", "order_return",
-    "delivery_issue", "damaged_or_missing_item", "payment_failed",
-    "billing_dispute", "invoice_request",
-}
-
 
 async def retrieve_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Runs for every tool_group except "none" (chitchat/feedback/spam/
+    unknown) - order and transaction intents get policy context alongside
+    their tools (e.g. a refund request benefits from the approval-limits
+    policy, not just the transaction lookup), not only pure knowledge
+    questions. See app/agent/nodes/plan.py for how tool_group is set.
+    """
     session = config["configurable"]["session"]
 
-    if state["intent"] not in KNOWLEDGE_INTENTS:
+    if state["tool_group"] == "none":
         await record_step(
             session, run_id=state["run_id"], node="retrieve",
-            output={"skipped": True, "reason": f"intent {state['intent']} is not knowledge-shaped"},
+            output={"skipped": True, "reason": "tool_group is 'none'"},
         )
         return {"retrieved": []}
 

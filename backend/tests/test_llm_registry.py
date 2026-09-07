@@ -68,6 +68,36 @@ async def test_falls_back_to_second_provider_after_primary_fails(monkeypatch):
     assert outcome.text == "pong"
 
 
+async def test_quota_exhaustion_skips_remaining_retries_and_falls_back(monkeypatch):
+    # Real bug found live-testing Stage 5 against a genuinely exhausted free
+    # tier: without this, a 429 gets retried llm_max_retries times (with
+    # backoff sleeps) before falling back, even though a quota error will
+    # not clear in the seconds this request has to live. See
+    # docs/PROGRESS.md Stage 5 - one reply took 235s before this fix.
+    monkeypatch.setattr("app.llm.registry.settings.llm_provider", "gemini")
+    monkeypatch.setattr("app.llm.registry.settings.llm_fallback_provider", "groq")
+    monkeypatch.setattr("app.llm.registry.settings.llm_max_retries", 3)
+
+    client = LLMClient(LLMRole.classify)
+    gemini_attempts = 0
+
+    def fake_build(provider, model):
+        nonlocal gemini_attempts
+        if provider == "gemini":
+            gemini_attempts += 1
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded, retry in 49s")
+        mock = AsyncMock()
+        mock.ainvoke.return_value.content = "pong"
+        mock.ainvoke.return_value.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+        return mock
+
+    with patch("app.llm.registry._build_model", side_effect=fake_build):
+        outcome = await client.ainvoke("anything")
+
+    assert gemini_attempts == 1  # not llm_max_retries (3) - quota errors don't get retried
+    assert outcome.provider == "groq"
+
+
 async def test_raises_when_every_provider_fails(monkeypatch):
     monkeypatch.setattr("app.llm.registry.settings.llm_provider", "gemini")
     monkeypatch.setattr("app.llm.registry.settings.llm_fallback_provider", "groq")
