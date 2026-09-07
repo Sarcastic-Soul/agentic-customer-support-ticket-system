@@ -4,6 +4,7 @@ by channel rather than hardcoding which one to use.
 
 from app.channels.base import Channel, ChannelAdapter
 from app.channels.web import WebAdapter
+from app.channels.whatsapp import WhatsAppAdapter
 
 _ADAPTERS: dict[Channel, ChannelAdapter] = {}
 
@@ -13,6 +14,8 @@ def get_adapter(channel: Channel | str) -> ChannelAdapter:
     if channel not in _ADAPTERS:
         if channel == Channel.web:
             _ADAPTERS[channel] = WebAdapter()
+        elif channel == Channel.whatsapp:
+            _ADAPTERS[channel] = WhatsAppAdapter()
         else:
             raise NotImplementedError(f"no adapter registered for channel {channel!r} yet")
     return _ADAPTERS[channel]

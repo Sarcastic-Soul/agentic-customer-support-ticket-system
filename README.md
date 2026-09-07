@@ -79,13 +79,44 @@ make seed                     # synthetic customers, orders, transactions, KB
 make dev                      # api + worker + scheduler + frontend
 ```
 
-- Customer web chat: http://localhost:3000/chat
-- Agent console: http://localhost:3000/console
-- Admin dashboard: http://localhost:3000/admin
+- Customer web chat: http://localhost:5173/chat
+- Agent console: http://localhost:5173/console
+- Admin dashboard: not built yet (Stage 9)
 - API docs: http://localhost:8000/docs
 
 No API key? Set `LLM_PROVIDER=stub` for a deterministic fake model — the whole
 pipeline runs offline for tests and for developing the UI.
+
+## Trying WhatsApp for real
+
+The WhatsApp adapter, webhook, signature verification, and delivery-status
+tracking are all built and covered by tests using a real (but offline) Twilio
+signature check — see `backend/tests/test_whatsapp.py`. Every code path is
+also exercised without Twilio at all via `POST /dev/simulate/whatsapp`
+(same shape as `/dev/simulate/web`).
+
+Proving it against an actual phone needs a few manual steps that only make
+sense with you actively driving your phone, so they're not automated:
+
+1. Create a free [Twilio](https://www.twilio.com/try-twilio) account, open the
+   [WhatsApp Sandbox](https://console.twilio.com/us1/develop/sms/try-it-out/whatsapp-learn),
+   and note the sandbox number and join code.
+2. From your phone, WhatsApp the join code to the sandbox number.
+3. Put your Account SID and Auth Token into `.env`
+   (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`).
+4. Start a public tunnel to this machine, e.g. `cloudflared tunnel --url
+   http://localhost:8000`, and put the resulting URL into `.env` as
+   `PUBLIC_BASE_URL` (no trailing slash) — this is also what
+   `X-Twilio-Signature` verification checks the request against, so it must
+   match exactly.
+5. In the Twilio console, set the sandbox's "when a message comes in" webhook
+   to `<PUBLIC_BASE_URL>/channels/whatsapp/webhook` and the status callback
+   to `<PUBLIC_BASE_URL>/channels/whatsapp/status`.
+6. Message the sandbox number from your phone. `make dev`'s worker log shows
+   the run; the reply arrives back on WhatsApp.
+
+Twilio's trial credit is small (~100 WhatsApp messages) - budget it for this
+test and for a demo, not for development, which the simulator already covers.
 
 ## Scope
 
@@ -103,8 +134,10 @@ reads as a trade-off rather than an oversight.
 
 ## Project status
 
-Blueprint stage — no code yet. See
-[`docs/07-build-stages.md`](docs/07-build-stages.md) for the stage checklists and
-[`docs/PROGRESS.md`](docs/PROGRESS.md) for what is actually built.
+Stages 0-7 built and tested (Stage 6, the milestone, is live-verified against
+real Gemini/Groq — see `docs/PROGRESS.md`). See
+[`docs/07-build-stages.md`](docs/07-build-stages.md) for the stage checklists
+and [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is actually built, stage
+by stage, including real bugs found and fixed along the way.
 **Stage 6 is the milestone**: a complete vertical slice with escalation and the
 human console. Everything after it is breadth.

@@ -68,22 +68,25 @@ async def escalate_node(state: AgentState, config) -> dict:
             f"I've passed this to a specialist, reference {ticket.reference}. "
             "They'll follow up shortly."
         )
-        session.add(
-            Message(
-                conversation_id=state["conversation_id"], role="assistant", body=ack_text,
-                channel=state["channel"], direction="outbound",
-            )
+        ack_message = Message(
+            conversation_id=state["conversation_id"], role="assistant", body=ack_text,
+            channel=state["channel"], direction="outbound",
         )
+        session.add(ack_message)
         await session.flush()
 
         adapter = get_adapter(Channel(state["channel"]))
-        await adapter.send(
+        receipt = await adapter.send(
             OutboundMessage(
                 channel=adapter.channel,
                 external_thread_id=state["external_thread_id"],
                 text=ack_text,
             )
         )
+        ack_message.delivery_status = "sent" if receipt.ok else "failed"
+        if receipt.ok and receipt.detail:
+            ack_message.external_message_id = receipt.detail
+        await session.flush()
 
     decision = interrupt({
         "type": "escalation",

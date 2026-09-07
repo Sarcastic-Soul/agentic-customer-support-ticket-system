@@ -503,7 +503,65 @@ an unnoticed one.
     been visually confirmed.
 
 ## Stage 7 — WhatsApp channel
-**Status:** not started
+**Status:** done (code + simulator-tested; real-phone test deferred to the user)
+
+- Works: `WhatsAppAdapter` (`app/channels/whatsapp.py`) - parses Twilio's
+  form-encoded webhook into the same `InboundMessage` shape every channel
+  produces, sends outbound via the Twilio REST API, recognizes the
+  24-hour-service-window error code (63016) distinctly in logs, takes an
+  injectable `Client` for testing. `POST /channels/whatsapp/webhook`
+  (`app/ingress/whatsapp.py`) - real Twilio signature verification
+  (`twilio.request_validator.RequestValidator`, reconstructing the public
+  URL from `PUBLIC_BASE_URL` since a tunnel sits in front of this), fast
+  200 ack, same `ingest_message` pipeline as every channel, dedupes Twilio's
+  webhook retries for free via the existing `(channel, external_message_id)`
+  constraint. `POST /channels/whatsapp/status` delivery-status callback,
+  matched back to the `Message` row via the outbound provider SID.
+  `POST /dev/simulate/whatsapp` mirrors `/dev/simulate/web`. `respond`/
+  `escalate`/the console's reply endpoint all now record `delivery_status`
+  and the outbound provider SID using the adapter's `DeliveryReceipt`
+  (previously discarded - a genuine gap `WhatsAppAdapter.send()`'s design
+  exposed, fixed for all three channels' send paths, not just WhatsApp's).
+  150 backend tests passing (9 new: adapter parsing/send success/failure/
+  window-closed, and - notably - signature verification tested against a
+  **genuinely valid signature computed with Twilio's own documented HMAC
+  algorithm**, plus a tampered-body rejection, not just the disabled/
+  missing-header paths). Live-verified via the simulator against the real
+  worker with no Twilio credentials configured: the agent still classified,
+  reasoned, and answered correctly (`outcome=answered`) using real Gemini/
+  Groq; only the final Twilio send failed, was caught, logged, and recorded
+  as `delivery_status='failed'` - the run never crashed. Dedupe and
+  phone-based thread continuity verified live too (same `conversation_id`
+  across two messages from the same simulated phone number; an exact
+  duplicate `external_message_id` correctly stored as nothing).
+- Known broken: none against what's testable without a real Twilio account.
+- Skipped: **the actual "message a real sandbox number from your phone"
+  test** - deliberately, per the user's explicit choice (see the question
+  asked at the start of this stage). It needs a Twilio account, a phone
+  joining the sandbox, and a public tunnel, none of which make sense to
+  automate; manual steps are in the README's new "Trying WhatsApp for real"
+  section. Template messages for outside the 24h service window (out of
+  scope - noted in `docs/09-risks.md` R14, and the adapter at least
+  recognizes the failure distinctly rather than treating it as a generic
+  error).
+- Notes:
+  - Fixed a design gap that existed since Stage 2, surfaced by building a
+    channel where delivery can genuinely fail for reasons worth recording
+    (invalid number, window closed, API error - not just "process crashed"):
+    every `adapter.send()` call site was discarding the returned
+    `DeliveryReceipt` entirely. `respond_node`, `escalate_node`, and the
+    console's `/reply` endpoint all now set `Message.delivery_status` and
+    stash the provider's outbound message id in `Message.external_message_id`
+    (safe to reuse - the unique constraint is per-channel, and outbound/
+    inbound ids never collide since they're assigned by different sides).
+  - Twilio's own guidance was followed literally: "we strongly recommend
+    using the provided signature validation library... and not implementing
+    your own" - `verify_signature()` is a thin wrapper around the real SDK's
+    `RequestValidator`, not a hand-rolled HMAC check. The test suite still
+    needed a hand-rolled *signer* (there's no public "sign" helper in the
+    SDK) purely to produce a genuinely valid signature to test the real
+    validator against - documented in the test file as exactly that, not as
+    a second implementation of the security-relevant path.
 
 ## Stage 8 — Email channel
 **Status:** not started

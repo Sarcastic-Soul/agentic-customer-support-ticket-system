@@ -67,12 +67,16 @@ async def respond_node(state: AgentState, config: RunnableConfig) -> dict:
     await session.flush()
 
     adapter = get_adapter(Channel(state["channel"]))
-    await adapter.send(
+    receipt = await adapter.send(
         OutboundMessage(
             channel=adapter.channel,
             external_thread_id=state["external_thread_id"],
             text=state["draft"],
         )
     )
+    reply.delivery_status = "sent" if receipt.ok else "failed"
+    if receipt.ok and receipt.detail:
+        reply.external_message_id = receipt.detail
+    await session.flush()
 
     return {}

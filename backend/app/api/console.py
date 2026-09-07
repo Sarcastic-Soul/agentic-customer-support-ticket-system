@@ -189,22 +189,25 @@ async def send_reply(
     ticket = await _load_ticket(session, escalation.ticket_id)
     conversation = await session.get(Conversation, ticket.conversation_id)
 
-    session.add(
-        Message(
-            conversation_id=ticket.conversation_id, role="human_agent", body=body.text,
-            channel=ticket.channel, direction="outbound",
-        )
+    reply = Message(
+        conversation_id=ticket.conversation_id, role="human_agent", body=body.text,
+        channel=ticket.channel, direction="outbound",
     )
-    await session.commit()
+    session.add(reply)
+    await session.flush()
 
     adapter = get_adapter(Channel(ticket.channel))
-    await adapter.send(
+    receipt = await adapter.send(
         OutboundMessage(
             channel=adapter.channel, external_thread_id=conversation.external_thread_id,
             text=body.text,
         )
     )
-    return {"sent": True}
+    reply.delivery_status = "sent" if receipt.ok else "failed"
+    if receipt.ok and receipt.detail:
+        reply.external_message_id = receipt.detail
+    await session.commit()
+    return {"sent": True, "delivered": receipt.ok}
 
 
 @router.post("/escalations/{escalation_id}/return-to-ai")

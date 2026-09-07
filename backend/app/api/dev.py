@@ -24,16 +24,16 @@ class SimulateWebMessage(BaseModel):
     external_message_id: str | None = None
 
 
-class SimulateWebResponse(BaseModel):
+class SimulateResponse(BaseModel):
     stored: bool
     message_id: int | None = None
     conversation_id: int | None = None
 
 
-@router.post("/simulate/web", response_model=SimulateWebResponse)
+@router.post("/simulate/web", response_model=SimulateResponse)
 async def simulate_web_message(
     body: SimulateWebMessage, session: AsyncSession = Depends(get_session)
-) -> SimulateWebResponse:
+) -> SimulateResponse:
     external_message_id = body.external_message_id or str(uuid.uuid4())
 
     message = await ingest_message(
@@ -48,9 +48,46 @@ async def simulate_web_message(
     await session.commit()
 
     if message is None:
-        return SimulateWebResponse(stored=False)
+        return SimulateResponse(stored=False)
 
     await enqueue_handle_message(message.id)
-    return SimulateWebResponse(
+    return SimulateResponse(
+        stored=True, message_id=message.id, conversation_id=message.conversation_id
+    )
+
+
+class SimulateWhatsAppMessage(BaseModel):
+    phone: str  # E.164, e.g. '+919800000001' - no 'whatsapp:' prefix
+    text: str
+    external_message_id: str | None = None
+
+
+@router.post("/simulate/whatsapp", response_model=SimulateResponse)
+async def simulate_whatsapp_message(
+    body: SimulateWhatsAppMessage, session: AsyncSession = Depends(get_session)
+) -> SimulateResponse:
+    """Exercises the exact same ingest path the real /channels/whatsapp/webhook
+    does (identity resolution, dedupe, threading), without Twilio, a tunnel,
+    or a phone - see docs/PROGRESS.md Stage 7 for why the real phone test is
+    a manual step instead of an automated one.
+    """
+    external_message_id = body.external_message_id or str(uuid.uuid4())
+
+    message = await ingest_message(
+        session,
+        channel="whatsapp",
+        external_thread_id=body.phone,
+        sender_external_id=body.phone,
+        text=body.text,
+        external_message_id=external_message_id,
+        raw_payload=body.model_dump(),
+    )
+    await session.commit()
+
+    if message is None:
+        return SimulateResponse(stored=False)
+
+    await enqueue_handle_message(message.id)
+    return SimulateResponse(
         stored=True, message_id=message.id, conversation_id=message.conversation_id
     )
