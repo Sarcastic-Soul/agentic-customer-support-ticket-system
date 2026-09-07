@@ -2,15 +2,16 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy import select
 
 from app.agent.state import AgentState
-from app.models import Message
+from app.models import Message, Ticket
 
 HISTORY_LIMIT = 10
 
 
 async def prepare_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Loads recent conversation history. Identity (ticket_id, customer_id,
-    conversation_id) is already set by the caller before the graph runs -
-    this node never touches it, only reads context.
+    """Loads recent conversation history and the ticket's current ai_turns
+    count. Identity (ticket_id, customer_id, conversation_id) is already set
+    by the caller before the graph runs - this node never touches it, only
+    reads context.
     """
     session = config["configurable"]["session"]
 
@@ -30,4 +31,8 @@ async def prepare_node(state: AgentState, config: RunnableConfig) -> dict:
         for m in prior
         if m.role in ("customer", "assistant")
     ]
-    return {"history": history}
+
+    ticket = await session.get(Ticket, state["ticket_id"])
+    ai_turns = ticket.ai_turns if ticket is not None else 0
+
+    return {"history": history, "ai_turns": ai_turns}

@@ -5,6 +5,7 @@ they're running in production or against a test's injected session - see
 app/agent/nodes/respond.py and app/workers/tasks.py for why that matters.
 """
 
+from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import get_graph
@@ -51,6 +52,13 @@ async def run_agent(
         "tool_call_count": 0,
         "draft": None,
         "citations": [],
+        "verify_repair_attempted": False,
+        "verify_feedback": None,
+        "verify_passed": None,
+        "ai_turns": 0,
+        "escalation_reason_code": None,
+        "escalation_priority": None,
+        "human_note": None,
         "outcome": None,
     }
 
@@ -64,6 +72,39 @@ async def run_agent(
     except Exception as exc:
         run.outcome = "failed"
         run.error = str(exc)
+        if owns_session:
+            await session.commit()
+        else:
+            await session.flush()
+        raise
+
+    if owns_session:
+        await session.commit()
+    else:
+        await session.flush()
+    return final_state
+
+
+async def resume_agent(
+    session: AsyncSession,
+    *,
+    ticket_id: int,
+    resume_payload: dict,
+    owns_session: bool = True,
+) -> AgentState:
+    """Resumes a graph paused at escalate_node's interrupt() - the console's
+    "return to AI" action. Same thread_id as the original run
+    (f"ticket:{ticket_id}"), so LangGraph loads the checkpointed state and
+    continues inside escalate_node from the interrupt() call, not from
+    scratch. Runs against a fresh session by default (console requests are
+    not the worker's session), same commit-vs-flush rule as run_agent.
+    """
+    graph = await get_graph()
+    config = {"configurable": {"thread_id": f"ticket:{ticket_id}", "session": session}}
+
+    try:
+        final_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
+    except Exception:
         if owns_session:
             await session.commit()
         else:

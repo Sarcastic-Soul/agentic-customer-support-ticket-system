@@ -33,11 +33,22 @@ def _synthesize(schema: type[BaseModel]) -> BaseModel:
         if annotation is str:
             values[name] = "stub"
         elif annotation is float:
-            values[name] = 0.5
+            # High, not a middling 0.5: this project's only float verdict
+            # fields are confidence scores (Classification.confidence,
+            # VerifyVerdict.confidence), where a low value is itself a
+            # trigger (see app/agent/nodes/hard_route.py's
+            # low_intent_confidence check against INTENT_CONFIDENCE_MIN,
+            # default 0.60). A "assume success" stub should clear that bar,
+            # not spuriously escalate every single stub-driven run.
+            values[name] = 0.95
         elif annotation is int:
             values[name] = 0
         elif annotation is bool:
-            values[name] = False
+            # True, not False: a stub simulating "nothing went wrong" is a
+            # more useful default baseline for testing the happy path than
+            # a synthesized VerifyVerdict that fails all three checks and
+            # forces every stub-driven run through repair-then-escalate.
+            values[name] = True
         elif annotation is list or getattr(annotation, "__origin__", None) is list:
             values[name] = []
         elif annotation is dict or getattr(annotation, "__origin__", None) is dict:

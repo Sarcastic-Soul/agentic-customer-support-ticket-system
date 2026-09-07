@@ -55,5 +55,16 @@ class AgentState(TypedDict):
     draft: str | None
     citations: list[int]
 
+    # verify
+    verify_repair_attempted: bool
+    verify_feedback: str | None
+    verify_passed: bool | None
+
+    # escalation triggers / hard_route
+    ai_turns: int
+    escalation_reason_code: str | None
+    escalation_priority: str | None
+    human_note: str | None  # populated on resume, from the console's return-to-AI action
+
     # respond
-    outcome: str | None  # answered | no_context | failed
+    outcome: str | None  # answered | no_context | escalated | failed

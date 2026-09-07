@@ -56,6 +56,20 @@ async def handle_message(
             logger.warning("handle_message_no_ticket", message_id=message_id)
             return
 
+        if ticket.status in ("escalated", "human_working"):
+            # A human owns this ticket - the message is already persisted
+            # (the console shows it live), but the graph's checkpoint for
+            # this thread is either mid-run or paused at an interrupt.
+            # Invoking it again here with a fresh input isn't the resume
+            # protocol (Command(resume=...) is, via app.agent.run.resume_agent
+            # from the console) and would be undefined behaviour on an
+            # interrupted thread. The AI stays quiet until the human acts.
+            logger.info(
+                "handle_message_skipped_human_owned",
+                message_id=message_id, ticket_id=ticket.id, status=ticket.status,
+            )
+            return
+
         final_state = await run_agent(
             session,
             ticket_id=ticket.id,

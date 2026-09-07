@@ -17,13 +17,13 @@ NO_CONTEXT_REPLY = (
 CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
-def _format_history(history: list[dict]) -> str:
+def format_history(history: list[dict]) -> str:
     if not history:
         return "(no prior messages)"
     return "\n".join(f"{m['role']}: {m['body']}" for m in history)
 
 
-def _format_context(retrieved: list[dict]) -> str:
+def format_context(retrieved: list[dict]) -> str:
     if not retrieved:
         return "(none retrieved)"
     return "\n\n".join(
@@ -34,7 +34,7 @@ def _format_context(retrieved: list[dict]) -> str:
     )
 
 
-def _format_tool_results(tool_results: list[dict]) -> str:
+def format_tool_results(tool_results: list[dict]) -> str:
     if not tool_results:
         return "(no tools were called)"
     return "\n\n".join(
@@ -43,12 +43,54 @@ def _format_tool_results(tool_results: list[dict]) -> str:
     )
 
 
+def _format_extra_guidance(state: AgentState) -> str:
+    """Guidance not part of the normal grounded context: a human's note on
+    return-to-AI (Stage 6), or verify's feedback on a repair pass. Both are
+    optional and additive - most turns have neither.
+    """
+    parts = []
+    if state.get("human_note"):
+        parts.append(
+            "A human support agent reviewed this case and left a note for "
+            f"you to act on: {state['human_note']}"
+        )
+    if state.get("verify_feedback"):
+        parts.append(f"Revision needed: {state['verify_feedback']}")
+    if not parts:
+        return ""
+    return "\n" + "\n".join(parts) + "\n"
+
+
 async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
     session = config["configurable"]["session"]
 
-    # Stage 6's escalation queue doesn't exist yet - without either KB
-    # context or tool results there's nothing grounded to answer from, so
-    # the honest move is the fallback reply, not a guess.
+    # chitchat/feedback/spam/unknown (plan_node's tool_group == "none") need
+    # no KB context or tool results - a plain conversational reply is the
+    # correct behaviour, not an escalation. Only order/transaction/knowledge
+    # intents that genuinely found nothing fall into the no-context gap
+    # below, which verify_node turns into a real knowledge_gap escalation.
+    #
+    # tool_group is also None (never "none") when hard_route escalated
+    # before plan ever ran (customer_requested_human, abuse, legal, low
+    # confidence, turn budget) - resuming that via return-to-ai lands here
+    # with no tool_group set at all. Treat it the same as "none": the human
+    # note is what matters now, not a domain lookup that was never planned.
+    if state["tool_group"] in (None, "none"):
+        prompt = load_prompt(
+            "chitchat", history=format_history(state["history"]), message=state["latest_message"]
+        )
+        client = get_llm(LLMRole.reason)
+        outcome = await client.ainvoke(prompt)
+        draft = outcome.text or NO_CONTEXT_REPLY
+        await record_step(
+            session, run_id=state["run_id"], node="answer",
+            model=f"{outcome.provider}:{outcome.model}", prompt=prompt,
+            output={"draft": draft, "citations": []},
+            tokens_in=outcome.tokens_in, tokens_out=outcome.tokens_out,
+            latency_ms=outcome.latency_ms,
+        )
+        return {"draft": draft, "citations": [], "outcome": "answered"}
+
     if not state["retrieved"] and not state["tool_results"]:
         await record_step(
             session, run_id=state["run_id"], node="answer",
@@ -59,9 +101,10 @@ async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
     prompt = load_prompt(
         "answer",
         intent=state["intent"],
-        context=_format_context(state["retrieved"]),
-        tool_results=_format_tool_results(state["tool_results"]),
-        history=_format_history(state["history"]),
+        context=format_context(state["retrieved"]),
+        tool_results=format_tool_results(state["tool_results"]),
+        extra_guidance=_format_extra_guidance(state),
+        history=format_history(state["history"]),
         message=state["latest_message"],
     )
 

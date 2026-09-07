@@ -4,6 +4,7 @@ import redis.asyncio as redis
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from app.api.console import router as console_router
 from app.api.dev import router as dev_router
 from app.api.kb import router as kb_router
 from app.config import settings
@@ -27,6 +28,7 @@ app = FastAPI(title="AI Customer Support", lifespan=lifespan)
 app.include_router(dev_router)
 app.include_router(web_ws_router)
 app.include_router(kb_router)
+app.include_router(console_router)
 
 
 @app.get("/health")

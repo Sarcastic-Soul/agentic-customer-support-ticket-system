@@ -1,11 +1,14 @@
 """Runs against LLM_PROVIDER=stub (real keys live in .env, but this test
-must stay free/fast/deterministic - see tests/test_llm_registry.py). With a
-stub classifier, intent always synthesizes to something outside the known
-INTENTS list, which classify_node normalizes to "unknown" - not a
-knowledge-shaped intent, so retrieve is skipped and answer falls back to the
-honest "passing this to a specialist" reply. That's a fully deterministic
-path worth asserting on its own; the real classify/retrieve/answer behavior
-against live Gemini/Groq was verified manually - see docs/PROGRESS.md Stage 4.
+must stay free/fast/deterministic - see tests/test_llm_registry.py). The
+stub's structured-output synthesis defaults to the "happy path" (confidence
+0.95, all verdict booleans True - see app/llm/stub.py) so a plain message
+runs the full classify -> plan -> retrieve -> act -> answer -> verify ->
+respond path without spuriously escalating. A stub-classified intent always
+lands outside the known INTENTS list and normalizes to "unknown", which
+plan_node maps to tool_group "none" (chitchat) - no retrieval, no tools, a
+plain conversational reply. The real classify/plan/retrieve/act/answer/verify
+behaviour against live Gemini/Groq, including a genuine escalation, was
+verified manually - see docs/PROGRESS.md Stage 5 and 6.
 """
 
 from sqlalchemy import select
@@ -53,7 +56,7 @@ async def test_handle_message_runs_agent_and_advances_ticket(session, monkeypatc
         )
     ).scalar_one()
     assert reply.role == "assistant"
-    assert "specialist" in reply.body
+    assert reply.body  # stub's canned text - content itself isn't the point here
 
 
 async def test_handle_message_nonexistent_message_is_a_noop(session, monkeypatch):

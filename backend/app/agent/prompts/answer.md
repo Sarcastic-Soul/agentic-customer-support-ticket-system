@@ -25,7 +25,7 @@ Retrieved knowledge:
 
 Tool results (this customer's real account data):
 {tool_results}
-
+{extra_guidance}
 Conversation so far:
 {history}
 

@@ -37,7 +37,7 @@ async def test_stub_structured_output(monkeypatch):
     outcome = await client.ainvoke("anything", structured=Classification)
     assert isinstance(outcome.structured, Classification)
     assert outcome.structured.intent == "stub"
-    assert outcome.structured.confidence == 0.5
+    assert outcome.structured.confidence == 0.95
 
 
 async def test_falls_back_to_second_provider_after_primary_fails(monkeypatch):

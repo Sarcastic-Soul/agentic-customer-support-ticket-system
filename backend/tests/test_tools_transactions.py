@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.models import Customer, Order, Transaction
+from app.models import Customer, Order, Ticket, Transaction
 from app.tools.context import ToolContext
+from app.tools.registry import execute_tool, get_tool_spec
 from app.tools.transactions import get_refund_status, request_refund
 
 
@@ -109,3 +110,29 @@ async def test_get_refund_status_reports_no_refund_when_none_exists(session):
     result = await get_refund_status(ctx, txn.txn_ref)
 
     assert result == {"error": "no_refund_on_this_transaction"}
+
+
+async def test_execute_tool_coerces_string_amount_from_llm_tool_call(session):
+    # Real bug, found live: Gemini's tool-call JSON sends a Decimal-typed
+    # arg as a plain string ("4200.00"), and request_refund does real
+    # arithmetic on `amount` (comparing it to the policy ceiling) - without
+    # coercing args through the tool's schema first, that raised
+    # "'>' not supported between instances of 'str' and 'decimal.Decimal'"
+    # instead of returning a denial. See docs/PROGRESS.md Stage 6.
+    customer = await _make_customer(session, "refund-string-amount")
+    order = await _make_order(session, customer, "string-amount")
+    txn = await _make_txn(session, order, customer, suffix=1, amount="5000.00")
+    await _make_txn(session, order, customer, suffix=2, amount="5000.00")  # duplicate -> a fault
+
+    ticket = Ticket(reference=f"T-TEST-{order.id}", customer_id=customer.id, channel="web")
+    session.add(ticket)
+    await session.flush()
+
+    ctx = ToolContext(session=session, customer_id=customer.id, ticket_id=ticket.id, run_id=0)
+    spec = get_tool_spec("request_refund")
+    result = await execute_tool(
+        spec, ctx, {"txn_ref": txn.txn_ref, "amount": "5000.00", "reason": "duplicate"}
+    )
+
+    assert result["denied"] is True
+    assert "exceeds" in result["reason"]

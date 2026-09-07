@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.logging import get_logger
 from app.models import ToolCall
@@ -57,6 +57,14 @@ async def execute_tool(
     Deny/error results are returned as structured dicts, not exceptions -
     the model needs to see *why* a tool call didn't do what it asked, not
     just that something broke.
+
+    Validates `args` through spec.args_schema before calling the function -
+    without this, args come through as whatever raw JSON type the model's
+    tool call produced (e.g. Gemini sends a Decimal-typed field as a plain
+    string), and a tool doing real arithmetic on it (request_refund
+    comparing `amount` against the policy ceiling) raises a TypeError
+    instead of running. Found live: "'>' not supported between instances of
+    'str' and 'decimal.Decimal'" - see docs/PROGRESS.md Stage 6.
     """
     start = time.monotonic()
     result: dict
@@ -65,7 +73,11 @@ async def execute_tool(
     deny_reason: str | None = None
 
     try:
-        result = await spec.func(ctx, **args)
+        try:
+            validated = spec.args_schema.model_validate(args)
+        except ValidationError as exc:
+            raise ValueError(f"invalid arguments for {spec.name}: {exc}") from exc
+        result = await spec.func(ctx, **validated.model_dump())
         if spec.write and result.get("denied"):
             authorized = False
             deny_reason = result.get("reason")

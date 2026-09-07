@@ -369,7 +369,138 @@ an unnoticed one.
     `make seed`.
 
 ## Stage 6 — Escalation and human console (MILESTONE)
-**Status:** not started
+**Status:** done - the demo script runs clean, live, against real Gemini/Groq.
+
+- Works: `verify` node (grounded/answers_question/policy_safe, one repair
+  pass) with a strict prompt; deterministic triggers (`app/policy/triggers.py`
+  - human request, abuse/distress, legal/regulatory) checked in `hard_route`
+  before any LLM call is spent; judgemental triggers (low intent confidence,
+  turn budget, knowledge gap, policy-denied-and-requires-human, ungrounded
+  after repair) checked in `hard_route`/`verify`; handoff packet builder
+  (`app/agent/escalation.py` - LLM summary, deterministic timeline/entities,
+  suggested reply); `escalate` node pauses the graph with `interrupt()`,
+  acknowledges the customer with the ticket reference, and is **idempotent
+  against LangGraph's replay-the-whole-node-on-resume behaviour** (see below);
+  full console API (`app/api/console.py`: queue, claim with
+  `FOR UPDATE SKIP LOCKED`, transcript, reply, return-to-AI via
+  `Command(resume=...)`, resolve); minimal console UI
+  (`frontend/src/routes/console.tsx` - queue list, handoff packet, timeline,
+  transcript, reply/return-to-AI/resolve). Graph is now `prepare ->
+  classify -> hard_route -[escalate|plan] -> plan -> retrieve -> act ->
+  answer -> verify -[escalate|answer(repair)|respond] -> escalate
+  -[answer(resume)|end] -> respond`. 141 backend tests passing (10 new:
+  hard-triggered escalation + pause, resume with a human note reaching a
+  real answer, tool-args coercion regression). **Live-verified the full
+  demo script end to end** against real seeded data, real Gemini (with real
+  free-tier quota exhaustion mid-test) and Groq fallback: a genuine 4200 INR
+  duplicate-charge refund request was correctly denied by policy
+  (`authorized=false`, ceiling recorded), escalated with a complete,
+  accurate handoff packet, listed in `GET /api/console/queue`, claimed,
+  replied to by a "human" through the same customer thread, and resolved -
+  ticket ends `closed`/`human_resolved` with the summary recorded.
+- Known broken: none against the demo script.
+- Skipped: a dedicated console WebSocket channel (the UI polls every 5s via
+  TanStack Query instead - simpler, and 5s is plenty for a human-paced
+  queue); the "approve suggested action" button described in
+  `05-escalation-policy.md` (folded into "send reply" - the human can just
+  send/edit the AI's suggested reply, which is the same outcome with one
+  fewer control); auth on the console API (Stage 9's job, stated loudly in
+  `app/api/console.py`'s module docstring, not hidden).
+- Notes:
+  - **The single most important thing learned building this stage**:
+    LangGraph does not resume a node "mid-function" the way a Python
+    generator would. On `Command(resume=...)`, the *entire interrupted node
+    re-executes from the top* - `interrupt()` calls are replayed in order
+    and immediately return their cached resume value, but every other line
+    in the function, including side effects, genuinely runs again. Discovered
+    because `escalate_node` builds the handoff packet, inserts the
+    `Escalation` row, transitions the ticket, and sends the customer
+    acknowledgement *before* calling `interrupt()` - on the very first resume
+    test, this silently doubled up and then crashed
+    (`InvalidTransition: cannot transition ticket from 'escalated' to
+    'escalated'`) because the whole setup block ran a second time. Fixed by
+    making the node idempotent: look up an existing, not-yet-resolved
+    escalation for this ticket + reason_code before doing any of the
+    one-time setup, and skip straight to `interrupt()` if one is already
+    there. This is a load-bearing LangGraph fact for anyone extending this
+    graph later, not a one-off bug - documented in the node's own docstring,
+    not just here.
+  - **A second real bug the same debugging session surfaced**: `answer_node`
+    checked `state["tool_group"] == "none"` to decide "this is chitchat, just
+    reply conversationally" - but when `hard_route` escalates *before* `plan`
+    ever runs (customer-requested-human, abuse, legal, low confidence, turn
+    budget), `tool_group` is never set at all, so it's `None`, not the string
+    `"none"`. On return-to-AI, that mismatch sent every hard-route-triggered
+    resume through the "no context" branch, which immediately escalated
+    again as `knowledge_gap` - an infinite-loop-shaped bug (return to AI ->
+    instant re-escalation) that only a real resume test could have caught.
+    Fixed the condition to `state["tool_group"] in (None, "none")`.
+  - **A third real bug, found live, not in any test**: Gemini's tool-call
+    JSON sends a `Decimal`-typed argument (`RequestRefundArgs.amount`) as a
+    plain string. `execute_tool()` was calling the tool function with the
+    raw, unvalidated `args` dict straight from the model's tool call -
+    `request_refund` then tried `amount > ceiling` with `amount` still a
+    `str`, raising `'>' not supported between instances of 'str' and
+    'decimal.Decimal'` instead of returning a policy denial. Fixed by
+    validating/coercing `args` through the tool's own `args_schema`
+    (`spec.args_schema.model_validate(args)`) before calling the function -
+    the schema was already being shown to the LLM for its benefit; it just
+    wasn't being *used* on the way back in. Every stub-based test passed
+    throughout - this needed a real model actually calling the tool to
+    surface, which is the whole argument for the live-verification habit
+    this project has kept up since Stage 4.
+  - **Stub calibration, again**: `VerifyVerdict`'s three boolean fields all
+    defaulted to the stub's generic `bool -> False`, which means "failed
+    every check" - so *every* stub-driven run hit the repair path once, then
+    escalated as `ungrounded_answer`, regardless of what was actually being
+    tested. Same root cause as Stage 4's `Classification.confidence`
+    default (0.5, just under `INTENT_CONFIDENCE_MIN`'s 0.60, silently
+    routing every stub run through `low_intent_confidence` once
+    `hard_route` existed to check it). Both fixed the same way: the stub's
+    "assume success" defaults should clear whatever threshold the code
+    actually checks (bool default `True`, confidence default `0.95`), so a
+    plain stub-driven test exercises the happy path by default, and a test
+    that specifically wants the escalation path constructs it deliberately
+    (as `test_escalation.py` does, via a hard-trigger message, not by
+    accident).
+  - Same event-loop-pollution family of bug as Stage 1's `engine.dispose()`
+    fix, twice more: `app.channels.registry`'s cached `WebAdapter` (holds a
+    Redis client) and `app.agent.checkpoint`'s psycopg pool (its internal
+    `asyncio.Lock`) are both lazy module-level singletons, and both broke on
+    the *second* test that touched them in a session with
+    `RuntimeError: ... is bound to a different event loop`. `app.agent.graph`'s
+    cached `CompiledStateGraph` also had to be reset, since it holds a
+    reference to whichever checkpointer it was compiled with - closing the
+    checkpointer alone left the cached graph pointing at a dead pool. All
+    three are now torn down in `tests/conftest.py`'s autouse fixture,
+    alongside the engine. This is the second time this exact class of bug
+    has appeared from a different singleton; worth remembering as a pattern
+    for any *future* lazily-initialized, connection-holding module-level
+    cache in this codebase.
+  - The `route_after_escalate` decision to skip `plan`/`retrieve`/`act` on
+    return-to-AI (jump straight to `answer` with the human note and the
+    *existing* retrieved/tool_results context) was deliberate, not just the
+    path of least resistance: re-running `act` would very plausibly re-call
+    `request_refund` and get denied by policy *again*, since `authorize()`
+    has no way to know a human just approved it out of band. The AI should
+    compose a reply using what the human told it, not re-litigate the same
+    tool call.
+  - A resolved-without-return-to-AI escalation (the human just sends their
+    own reply and resolves - the more common real path, and what the live
+    demo actually exercised) leaves its originating `agent_runs` row
+    permanently paused (`finished_at` stays null, `outcome` stays whatever
+    it was before the interrupt). This is a deliberate, accepted gap: the
+    `escalations` table is authoritative for what actually happened to the
+    ticket; `agent_runs` is best-effort observability for that path, not the
+    source of truth. Revisit only if Stage 11's eval metrics need a clean
+    `outcome` on every row.
+  - Console UI verified against the live API responses (curl, matching every
+    TypeScript type in `console-api.ts` against the real JSON shape) and a
+    clean `tsc -b && vite build`, but not click-through in an actual browser
+    - no browser automation tool is available in this environment. Stated
+    plainly rather than claimed as done: the backend the UI calls has full
+    live and automated coverage; the UI's own rendering/interaction has not
+    been visually confirmed.
 
 ## Stage 7 — WhatsApp channel
 **Status:** not started
