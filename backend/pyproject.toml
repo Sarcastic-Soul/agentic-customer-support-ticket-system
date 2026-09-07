@@ -19,6 +19,7 @@ dependencies = [
     "langchain-google-genai>=2.0",
     "langchain-groq>=0.2",
     "fastembed>=0.4",
+    "pgvector>=0.5",
     "python-jose[cryptography]>=3.3",
     "argon2-cffi>=23.1",
     "structlog>=24.4",
@@ -41,6 +42,12 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's Depends(...) in a default arg is the idiomatic pattern, not a bug.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Dense literal seed data reads better on one line per record than wrapped.
+"app/seed/data.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

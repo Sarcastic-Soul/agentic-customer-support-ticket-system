@@ -4,6 +4,7 @@ import redis.asyncio as redis
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from app.api.dev import router as dev_router
 from app.config import settings
 from app.db.session import engine
 from app.logging import configure_logging, get_logger
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Customer Support", lifespan=lifespan)
+app.include_router(dev_router)
 
 
 @app.get("/health")
