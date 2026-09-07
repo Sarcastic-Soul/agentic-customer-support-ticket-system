@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { consoleApi } from "../lib/console-api";
+import { isAuthed } from "../lib/auth";
 
 type ConsoleSearch = { escalation?: number };
 
@@ -9,6 +10,11 @@ export const Route = createFileRoute("/console")({
   validateSearch: (search: Record<string, unknown>): ConsoleSearch => ({
     escalation: search.escalation ? Number(search.escalation) : undefined,
   }),
+  beforeLoad: ({ location }) => {
+    if (!isAuthed()) {
+      throw redirect({ to: "/login", search: { next: location.href } });
+    }
+  },
   component: ConsolePage,
 });
 
@@ -33,7 +39,12 @@ function ConsolePage() {
     <div className="flex h-dvh bg-neutral-50 text-neutral-900">
       <aside className="w-80 flex-shrink-0 overflow-y-auto border-r border-neutral-200 bg-white">
         <div className="border-b border-neutral-200 px-4 py-3">
-          <h1 className="text-sm font-semibold">Escalation Queue</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-sm font-semibold">Escalation Queue</h1>
+            <Link to="/admin/tickets" className="text-xs text-sky-700 hover:underline">
+              Dashboard
+            </Link>
+          </div>
           <p className="text-xs text-neutral-500">{queueQuery.data?.length ?? 0} waiting</p>
         </div>
         <ul>

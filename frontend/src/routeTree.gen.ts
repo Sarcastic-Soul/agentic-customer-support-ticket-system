@@ -10,12 +10,25 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as ConsoleRouteImport } from './routes/console'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AdminIndexRouteImport } from './routes/admin.index'
+import { Route as AdminKbRouteImport } from './routes/admin.kb'
+import { Route as AdminMetricsRouteImport } from './routes/admin.metrics'
+import { Route as AdminTicketsRouteImport } from './routes/admin.tickets'
+import { Route as AdminTicketsIndexRouteImport } from './routes/admin.tickets.index'
+import { Route as AdminTicketsTicketIdRouteImport } from './routes/admin.tickets.$ticketId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -28,35 +41,126 @@ const ConsoleRoute = ConsoleRouteImport.update({
   path: '/console',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminKbRoute = AdminKbRouteImport.update({
+  id: '/kb',
+  path: '/kb',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminMetricsRoute = AdminMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminTicketsRoute = AdminTicketsRouteImport.update({
+  id: '/tickets',
+  path: '/tickets',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminTicketsIndexRoute = AdminTicketsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminTicketsRoute,
+} as any)
+const AdminTicketsTicketIdRoute = AdminTicketsTicketIdRouteImport.update({
+  id: '/$ticketId',
+  path: '/$ticketId',
+  getParentRoute: () => AdminTicketsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/chat': typeof ChatRoute
   '/console': typeof ConsoleRoute
+  '/login': typeof LoginRoute
+  '/admin/kb': typeof AdminKbRoute
+  '/admin/metrics': typeof AdminMetricsRoute
+  '/admin/tickets': typeof AdminTicketsRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
+  '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
+  '/admin/tickets/': typeof AdminTicketsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/console': typeof ConsoleRoute
+  '/login': typeof LoginRoute
+  '/admin/kb': typeof AdminKbRoute
+  '/admin/metrics': typeof AdminMetricsRoute
+  '/admin': typeof AdminIndexRoute
+  '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
+  '/admin/tickets': typeof AdminTicketsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/chat': typeof ChatRoute
   '/console': typeof ConsoleRoute
+  '/login': typeof LoginRoute
+  '/admin/kb': typeof AdminKbRoute
+  '/admin/metrics': typeof AdminMetricsRoute
+  '/admin/tickets': typeof AdminTicketsRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
+  '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
+  '/admin/tickets/': typeof AdminTicketsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/console'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/console'
+    | '/login'
+    | '/admin/kb'
+    | '/admin/metrics'
+    | '/admin/tickets'
+    | '/admin/'
+    | '/admin/tickets/$ticketId'
+    | '/admin/tickets/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/console'
-  id: '__root__' | '/' | '/chat' | '/console'
+  to:
+    | '/'
+    | '/chat'
+    | '/console'
+    | '/login'
+    | '/admin/kb'
+    | '/admin/metrics'
+    | '/admin'
+    | '/admin/tickets/$ticketId'
+    | '/admin/tickets'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/console'
+    | '/login'
+    | '/admin/kb'
+    | '/admin/metrics'
+    | '/admin/tickets'
+    | '/admin/'
+    | '/admin/tickets/$ticketId'
+    | '/admin/tickets/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRouteWithChildren
   ChatRoute: typeof ChatRoute
   ConsoleRoute: typeof ConsoleRoute
+  LoginRoute: typeof LoginRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -66,6 +170,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -82,13 +193,94 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/': {
+      id: '/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/kb': {
+      id: '/admin/kb'
+      path: '/kb'
+      fullPath: '/admin/kb'
+      preLoaderRoute: typeof AdminKbRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/metrics': {
+      id: '/admin/metrics'
+      path: '/metrics'
+      fullPath: '/admin/metrics'
+      preLoaderRoute: typeof AdminMetricsRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/tickets': {
+      id: '/admin/tickets'
+      path: '/tickets'
+      fullPath: '/admin/tickets'
+      preLoaderRoute: typeof AdminTicketsRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/tickets/': {
+      id: '/admin/tickets/'
+      path: '/'
+      fullPath: '/admin/tickets/'
+      preLoaderRoute: typeof AdminTicketsIndexRouteImport
+      parentRoute: typeof AdminTicketsRoute
+    }
+    '/admin/tickets/$ticketId': {
+      id: '/admin/tickets/$ticketId'
+      path: '/$ticketId'
+      fullPath: '/admin/tickets/$ticketId'
+      preLoaderRoute: typeof AdminTicketsTicketIdRouteImport
+      parentRoute: typeof AdminTicketsRoute
+    }
   }
 }
 
+interface AdminTicketsRouteChildren {
+  AdminTicketsTicketIdRoute: typeof AdminTicketsTicketIdRoute
+  AdminTicketsIndexRoute: typeof AdminTicketsIndexRoute
+}
+
+const AdminTicketsRouteChildren: AdminTicketsRouteChildren = {
+  AdminTicketsTicketIdRoute: AdminTicketsTicketIdRoute,
+  AdminTicketsIndexRoute: AdminTicketsIndexRoute,
+}
+
+const AdminTicketsRouteWithChildren = AdminTicketsRoute._addFileChildren(
+  AdminTicketsRouteChildren,
+)
+
+interface AdminRouteChildren {
+  AdminKbRoute: typeof AdminKbRoute
+  AdminMetricsRoute: typeof AdminMetricsRoute
+  AdminTicketsRoute: typeof AdminTicketsRouteWithChildren
+  AdminIndexRoute: typeof AdminIndexRoute
+}
+
+const AdminRouteChildren: AdminRouteChildren = {
+  AdminKbRoute: AdminKbRoute,
+  AdminMetricsRoute: AdminMetricsRoute,
+  AdminTicketsRoute: AdminTicketsRouteWithChildren,
+  AdminIndexRoute: AdminIndexRoute,
+}
+
+const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRouteWithChildren,
   ChatRoute: ChatRoute,
   ConsoleRoute: ConsoleRoute,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

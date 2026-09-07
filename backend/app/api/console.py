@@ -1,7 +1,6 @@
-"""The human agent console API. No auth yet - JWT/roles are Stage 9's job;
-Stage 6 delivers the escalation mechanics end to end. Anyone who can reach
-this API can act as any human agent for now. Say so loudly in the report,
-not quietly.
+"""The human agent console API. Stage 6 delivered the escalation mechanics
+without auth (noted loudly there, not quietly); Stage 9 adds it - every
+route below requires a valid human_agents JWT (see app/core/auth.py).
 """
 
 from datetime import UTC, datetime
@@ -14,11 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.run import resume_agent
 from app.channels.base import Channel, OutboundMessage
 from app.channels.registry import get_adapter
+from app.core.auth import get_current_agent
 from app.core.tickets import transition_ticket
 from app.db.session import get_session
 from app.models import Conversation, Escalation, Message, Ticket
 
-router = APIRouter(prefix="/api/console", tags=["console"])
+router = APIRouter(
+    prefix="/api/console", tags=["console"], dependencies=[Depends(get_current_agent)]
+)
 
 
 class EscalationSummary(BaseModel):

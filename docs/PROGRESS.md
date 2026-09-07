@@ -629,7 +629,66 @@ the user, same pattern as Stage 7)
     to leave running even with no mailbox configured.
 
 ## Stage 9 — Dashboard and metrics
-**Status:** not started
+**Status:** done
+
+- Works: JWT auth (`app/core/auth.py`, `app/api/auth.py`) - argon2 password
+  hashes, `python-jose` HS256 tokens, `get_current_agent`/`require_admin`
+  FastAPI dependencies; `app/api/admin.py` - ticket list/detail with full
+  `agent_runs`/`agent_steps` reasoning trace, `/metrics/overview`,
+  `/metrics/channels`, `/metrics/intents`, `/metrics/escalations` (all reading
+  real `tickets`/`agent_runs`/`escalations` rows, nothing pre-aggregated), KB
+  document CRUD with re-embedding on body change. Frontend: `/login`, `/admin`
+  layout with an auth guard reused by `/console`, ticket table with filters,
+  ticket detail (transcript + collapsible run/step trace), metrics dashboard
+  (Recharts - stacked bar by channel, horizontal bar by intent, pie by
+  escalation reason), KB list/editor gated to `role=admin` for writes. 171
+  backend tests passing (2 new: KB update/create `updated_at` regression).
+  **Live-verified**: real login → tickets → ticket detail → metrics → KB edit
+  → sign-out flow driven with Playwright against system Chrome and the real
+  running API/worker/Postgres, zero console/network errors on the final pass.
+- Known broken: none against what's testable without a second human agent
+  seat to demo hand-off from the admin side interactively (the escalation
+  console itself was already live-verified in Stage 6).
+- Skipped: nothing from the build-stages scope for this stage.
+- Notes:
+  - **Real bug, found live, two-part**: `KBDocument.updated_at` is
+    `mapped_column(server_default=func.now(), onupdate=func.now())`. SQLAlchemy
+    expires an `onupdate`-bearing attribute after any flush that issues an
+    `UPDATE` for it, **independent of the session's `expire_on_commit`
+    setting** - that flag only controls whether *everything* gets expired at
+    commit, not this per-column invalidation. `create_kb_document` and
+    `update_kb_document` both built the response with `doc.updated_at`
+    immediately after `await session.commit()`; the KB editor's Save button
+    returned a 500 first with a real customer-facing symptom (found via
+    Playwright network-error listeners, root-caused via the API log to
+    `sqlalchemy.exc.MissingGreenlet` - an implicit lazy-load attempted
+    outside the greenlet context that async SQLAlchemy requires for any IO).
+    Fixed with an explicit `await session.refresh(doc)` right after commit in
+    both endpoints, since implicit/synchronous attribute reloads are simply
+    not supported under the asyncio extension - they must always be awaited
+    explicitly. Second part: after applying the fix, re-testing against the
+    live server *still* 500'd, with the traceback pointing at the exact
+    pre-fix line - the running `uvicorn` process had no `--reload` and was
+    still serving the old bytecode from before the edit. A code fix that
+    passes `pytest` (which imports the module fresh) can still be "unfixed"
+    on a long-lived dev server; the process needed an explicit restart before
+    the live re-verification meant anything.
+  - The regression test (`test_admin_kb.py`) surfaced a related but distinct,
+    test-only artifact: reusing one `agent`/`session` pair across two direct
+    (non-HTTP) calls in the test hit `MissingGreenlet` on `agent.id`, because
+    the plain `AsyncSession` the test fixture uses defaults to
+    `expire_on_commit=True` (unlike the app's real `async_session_factory`,
+    which sets it `False`) - the first call's commit expired the whole
+    session, `agent` included. Not reachable via real HTTP requests, where
+    each request gets `agent` freshly from `Depends(require_admin)`. Fixed by
+    refreshing `agent` between the two calls in the test, not by touching
+    `admin.py` again.
+  - A stray `/tmp` debug script that hit the live KB update endpoint before
+    the fix landed left doc id 5 ("Delayed delivery") with a
+    `"\n\n(verified edit)"` suffix appended twice and `version` bumped to 3.
+    Cleaned up directly against the dev DB (restored `body`, re-ran
+    `ingest_document` so the embedding matches); left `version` at 3 since
+    it's an audit counter with no correctness implication.
 
 ## Stage 10 — Voice notes
 **Status:** not started
