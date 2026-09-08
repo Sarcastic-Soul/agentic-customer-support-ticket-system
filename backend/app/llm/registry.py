@@ -29,6 +29,64 @@ from app.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Free-tier RPM ceilings, measured against the real usage dashboards (Google
+# AI Studio / Groq console), not documentation guesses - see
+# docs/PROGRESS.md Stage 12. Missing from this map (stub, any model not
+# listed) means "don't pace it".
+_RPM_LIMITS: dict[tuple[str, str], int] = {
+    ("gemini", "gemini-3.8-flash"): 5,
+    ("gemini", "gemini-3.5-flash-lite"): 15,
+    ("groq", "openai/gpt-oss-120b"): 30,
+    ("groq", "openai/gpt-oss-20b"): 30,
+}
+
+
+class _RateLimiter:
+    """Proactively paces requests per (provider, model) to stay under its
+    real RPM ceiling, instead of firing immediately and reactively retrying
+    after a 429. Matters because a non-quota transient error (a Gemini 503
+    "experiencing high demand", say) doesn't get the fast-fail treatment
+    _is_quota_exhausted gives a real 429 - it burns the full retry budget
+    with backoff, which live-testing measured at up to ~100s for one call.
+    Pacing requests below the ceiling in the first place avoids triggering
+    that path from self-inflicted throttling at all.
+
+    A sliding 60s window per key, sized to the model's RPM limit - not a
+    token bucket, since RPM ceilings here are small enough (5-30) that the
+    difference doesn't matter and a plain window is easier to reason about.
+    """
+
+    def __init__(self) -> None:
+        self._timestamps: dict[tuple[str, str], list[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def wait(self, provider: str, model: str) -> None:
+        limit = _RPM_LIMITS.get((provider, model))
+        if limit is None:
+            return
+        key = (provider, model)
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                window = self._timestamps.setdefault(key, [])
+                cutoff = now - 60
+                window[:] = [t for t in window if t > cutoff]
+                if len(window) < limit:
+                    window.append(now)
+                    return
+                sleep_for = window[0] + 60 - now + 0.05
+            # Sleep outside the lock - a long pacing wait for one
+            # (provider, model) key must not block unrelated keys from
+            # checking their own window in the meantime.
+            logger.info(
+                "llm_rate_limit_pacing", provider=provider, model=model,
+                limit_rpm=limit, sleep_seconds=round(sleep_for, 1),
+            )
+            await asyncio.sleep(sleep_for)
+
+
+_rate_limiter = _RateLimiter()
+
 # (setting for primary model, setting for fallback model) per role. verify
 # shares classify's tier/fallback, summarize shares reason's - see
 # docs/02-tech-stack.md's role table.
@@ -155,6 +213,7 @@ class LLMClient:
         for provider, model in self._candidates:
             for attempt in range(settings.llm_max_retries):
                 attempts += 1
+                await _rate_limiter.wait(provider, model)
                 start = time.monotonic()
                 try:
                     chat = _build_model(provider, model)

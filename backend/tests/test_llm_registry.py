@@ -10,13 +10,38 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
-from app.llm.registry import AllProvidersFailedError, LLMClient
+from app.llm.registry import AllProvidersFailedError, LLMClient, _RateLimiter
 from app.llm.roles import LLMRole
 
 
 class Classification(BaseModel):
     intent: str
     confidence: float
+
+
+class FakeClock:
+    """Controls time.monotonic() and stands in for asyncio.sleep() so rate
+    limiter tests are instant and deterministic instead of actually waiting
+    up to a minute per test.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.sleep_calls: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleep_calls.append(seconds)
+        self.now += seconds
+
+
+def _patch_clock(monkeypatch) -> FakeClock:
+    clock = FakeClock()
+    monkeypatch.setattr("app.llm.registry.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("app.llm.registry.asyncio.sleep", clock.sleep)
+    return clock
 
 
 async def test_stub_plain_text(monkeypatch):
@@ -111,3 +136,91 @@ async def test_raises_when_every_provider_fails(monkeypatch):
     with patch("app.llm.registry._build_model", side_effect=always_fails):
         with pytest.raises(AllProvidersFailedError):
             await client.ainvoke("anything")
+
+
+# Real free-tier RPM ceilings, measured against the actual usage dashboards
+# (not the docs) - see docs/PROGRESS.md Stage 12. gemini-3.8-flash: 5,
+# gemini-3.5-flash-lite: 15, Groq openai/gpt-oss-*: 30.
+
+
+async def test_rate_limiter_allows_calls_up_to_the_limit(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    limiter = _RateLimiter()
+
+    for _ in range(5):  # gemini-3.8-flash's real limit
+        await limiter.wait("gemini", "gemini-3.8-flash")
+
+    assert clock.sleep_calls == []
+
+
+async def test_rate_limiter_paces_the_call_over_the_limit(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    limiter = _RateLimiter()
+
+    for _ in range(5):
+        await limiter.wait("gemini", "gemini-3.8-flash")
+    await limiter.wait("gemini", "gemini-3.8-flash")  # 6th call in the same instant
+
+    assert len(clock.sleep_calls) == 1
+    assert 59.9 <= clock.sleep_calls[0] <= 60.1
+
+
+async def test_rate_limiter_tracks_each_model_independently(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    limiter = _RateLimiter()
+
+    for _ in range(5):
+        await limiter.wait("gemini", "gemini-3.8-flash")  # exhausts its RPM=5
+    await limiter.wait("gemini", "gemini-3.5-flash-lite")  # separate RPM=15 budget
+
+    assert clock.sleep_calls == []
+
+
+async def test_rate_limiter_never_paces_an_unlisted_model(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    limiter = _RateLimiter()
+
+    for _ in range(100):
+        await limiter.wait("stub", "stub")
+
+    assert clock.sleep_calls == []
+
+
+async def test_rate_limiter_resumes_after_the_window_clears(monkeypatch):
+    clock = _patch_clock(monkeypatch)
+    limiter = _RateLimiter()
+
+    for _ in range(5):
+        await limiter.wait("gemini", "gemini-3.8-flash")
+    clock.now += 61  # the whole window has aged out
+    await limiter.wait("gemini", "gemini-3.8-flash")
+
+    assert clock.sleep_calls == []
+
+
+async def test_llm_client_paces_every_attempt(monkeypatch):
+    # Proves the wiring, not the pacing math itself (covered above) -
+    # LLMClient.ainvoke must consult the shared rate limiter for every
+    # attempt against every candidate, not just the first.
+    monkeypatch.setattr("app.llm.registry.settings.llm_provider", "gemini")
+    monkeypatch.setattr("app.llm.registry.settings.llm_fallback_provider", "groq")
+    monkeypatch.setattr("app.llm.registry.settings.llm_max_retries", 1)
+
+    client = LLMClient(LLMRole.classify)
+    paced: list[tuple[str, str]] = []
+
+    async def fake_wait(provider: str, model: str) -> None:
+        paced.append((provider, model))
+
+    monkeypatch.setattr("app.llm.registry._rate_limiter.wait", fake_wait)
+
+    def fake_build(provider, model):
+        mock = AsyncMock()
+        mock.ainvoke.return_value.content = "pong"
+        mock.ainvoke.return_value.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+        return mock
+
+    with patch("app.llm.registry._build_model", side_effect=fake_build):
+        await client.ainvoke("anything")
+
+    assert paced == [client._candidates[0]]
