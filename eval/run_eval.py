@@ -33,6 +33,7 @@ from sqlalchemy.orm import selectinload
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
+from app.agent.nodes.answer import format_context, format_tool_results  # noqa: E402
 from app.agent.run import run_agent  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db.session import async_session_factory, engine  # noqa: E402
@@ -226,6 +227,14 @@ async def run_case(case: dict, *, run_tag: str) -> dict:
             "actual_tools": [t["tool"] for t in (final_state or {}).get("tool_results", [])],
             "reply_text": reply.body if reply else "",
             "citations": (final_state or {}).get("citations", []),
+            # Ground truth for judge_case() - without these the judge grades
+            # blind and flags every specific, correctly-grounded detail (a
+            # KB-cited policy number, a system-generated ticket reference)
+            # as "unverifiable", inflating hallucination_rate on facts that
+            # were never invented. See docs/PROGRESS.md Stage 11/12.
+            "retrieved": (final_state or {}).get("retrieved", []),
+            "tool_results": (final_state or {}).get("tool_results", []),
+            "ticket_reference": ticket.reference if ticket else None,
             "latency_ms": run.latency_ms if run else None,
             "est_cost_usd": float(run.est_cost_usd) if run and run.est_cost_usd else 0.0,
         }
@@ -263,18 +272,41 @@ def score_deterministic(case: dict, result: dict) -> dict:
 async def judge_case(case: dict, result: dict) -> JudgeVerdict | None:
     if not result["reply_text"]:
         return None
+    # Grading blind (no access to what the agent actually retrieved/looked
+    # up) makes every specific, correctly-grounded detail look unverifiable
+    # to the judge - a real bug found in Stage 11/12: a KB-cited policy
+    # number ("24 hours", "7 days") and a system-generated escalation
+    # reference both got flagged as "hallucinated" across most of the
+    # dataset, because the judge had nothing to check them against. Passing
+    # the same context/tool-results the agent itself was given, plus the
+    # real ticket reference, lets it actually verify instead of guess.
     prompt = (
-        "You are grading a customer support agent's reply. Score strictly.\n\n"
+        "You are grading a customer support agent's reply. Score strictly, "
+        "but only flag a claim as unverifiable if it contradicts or goes "
+        "beyond the evidence below - not just because you personally can't "
+        "independently confirm it.\n\n"
         f"Customer's message(s): {' | '.join(case['turns'])}\n\n"
+        f"Knowledge base excerpts the agent had access to:\n"
+        f"{format_context(result['retrieved'])}\n\n"
+        f"Tool/account-data results the agent had access to:\n"
+        f"{format_tool_results(result['tool_results'])}\n\n"
         f"Agent's reply: {result['reply_text']}\n\n"
+        f"Note: \"reference {result['ticket_reference']}\" (or similar) in "
+        "an escalation acknowledgement is a real, system-generated ticket "
+        "id, already confirmed to exist - it is not an invented claim, "
+        "score it as fine.\n\n"
         "correctness (1-5): does the reply correctly and completely address "
-        "what the customer asked?\n"
-        "groundedness (1-5): does every factual claim plausibly trace to a "
-        "real policy or account fact, with nothing invented?\n"
-        "hallucinated (bool): does the reply state any specific fact "
-        "(a number, a date, a status, an approval) that isn't the kind of "
-        "thing this system could actually know or that contradicts a "
-        "reasonable policy?\n"
+        "what the customer asked, given what the agent had available? An "
+        "honest escalation/deferral is correct behaviour (not a low score) "
+        "when the evidence above genuinely doesn't answer the question or "
+        "the request needs human approval - it is only incorrect if the "
+        "evidence *did* support answering directly and the agent failed to.\n"
+        "groundedness (1-5): does every factual claim trace to the "
+        "knowledge base excerpts or tool results above, with nothing "
+        "invented beyond them?\n"
+        "hallucinated (bool): does the reply state a specific fact that "
+        "contradicts the evidence above, or that isn't supported by it, "
+        "excluding the ticket reference per the note above?\n"
         "reasoning: one sentence."
     )
     try:
