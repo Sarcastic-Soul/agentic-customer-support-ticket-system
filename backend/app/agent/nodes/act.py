@@ -79,9 +79,27 @@ async def act_node(state: AgentState, config: RunnableConfig) -> dict:
         for tool_call in outcome.tool_calls:
             if call_count >= settings.max_tool_calls:
                 break
-            spec = get_tool_spec(tool_call["name"])
-            result = await execute_tool(spec, ctx, tool_call["args"], step_id=step.id)
             call_count += 1
+            try:
+                spec = get_tool_spec(tool_call["name"])
+            except KeyError:
+                # A model can call a tool name outside the bound schema -
+                # found live during Stage 11's eval run (gemini-3.5-flash-lite
+                # hallucinated a tool name that was never offered). Same
+                # shape of recovery as execute_tool's own error handling:
+                # tell the model, don't crash the graph over it.
+                result = {
+                    "error": "unknown_tool",
+                    "hint": f"{tool_call['name']!r} is not an available tool",
+                }
+                tool_results.append(
+                    {"tool": tool_call["name"], "args": tool_call["args"], "result": result}
+                )
+                messages.append(
+                    ToolMessage(content=str(result), tool_call_id=tool_call["id"])
+                )
+                continue
+            result = await execute_tool(spec, ctx, tool_call["args"], step_id=step.id)
             tool_results.append(
                 {"tool": tool_call["name"], "args": tool_call["args"], "result": result}
             )

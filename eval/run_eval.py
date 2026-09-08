@@ -74,12 +74,22 @@ class JudgeVerdict(BaseModel):
     reasoning: str
 
 
-async def resolve_external_thread_id(session, case: dict) -> str:
+async def resolve_sender_identity(session, case: dict) -> str:
     """Real seeded customers get their real phone/email so identity
     resolution matches them to their real order history; cases with no
-    customer_id get a synthetic per-case web session (a fresh, unverified
+    customer_id get a synthetic per-case identity (a fresh, unverified
     identity - correct for chitchat/policy/adversarial cases that aren't
     about any specific account).
+
+    This is deliberately NOT used as the conversation's external_thread_id
+    (see run_case) - several cases share the same real customer (there are
+    only a handful of seeded customers with interesting order histories),
+    and threading them into one shared conversation means whichever case
+    escalates first poisons every other case against that customer for the
+    rest of the run (ticket stays "escalated", so handle_message-equivalent
+    logic correctly, but unhelpfully, stays quiet on all of them). Found
+    live during Stage 11/12: cases sharing customer_id=5's WhatsApp number
+    all silently no-op'd once any one of them escalated.
     """
     customer_id = case.get("customer_id")
     channel = case["channel"]
@@ -105,14 +115,29 @@ async def resolve_external_thread_id(session, case: dict) -> str:
     return row
 
 
-async def run_case(case: dict) -> dict:
+async def run_case(case: dict, *, run_tag: str) -> dict:
     """Runs every turn in the case through the real ingress pipeline and the
     real graph, sequentially, in one conversation thread. Returns the last
     turn's final_state plus whatever's needed to score it.
+
+    run_tag must be unique per run_all() invocation (config name, or sweep
+    threshold) - it's folded into external_message_id so two invocations of
+    the same case (e.g. the "full" config, then a confidence-sweep pass)
+    don't dedupe against each other and silently produce an empty result.
+    Found live: the confidence sweep originally reused settings.eval_ablation
+    (always None, since the sweep doesn't touch it) as the only
+    per-invocation tag, so every sweep threshold deduped against the "full"
+    config run moments earlier and every case "passed" in 0.0s with no
+    graph run at all.
     """
     async with async_session_factory() as session:
-        external_thread_id = await resolve_external_thread_id(session, case)
+        sender_external_id = await resolve_sender_identity(session, case)
         channel = case["channel"]
+        # Conversations key on (channel, external_thread_id) alone
+        # (app/core/conversation.py) - a thread unique per case+run keeps
+        # every case isolated even when several cases share one real
+        # customer's identity for their order history.
+        external_thread_id = f"eval-thread-{case['id']}-{run_tag}-{RUN_NONCE}"
 
         final_state = None
         ticket_id = None
@@ -122,11 +147,9 @@ async def run_case(case: dict) -> dict:
                 session,
                 channel=channel,
                 external_thread_id=external_thread_id,
-                sender_external_id=external_thread_id,
+                sender_external_id=sender_external_id,
                 text=turn_text,
-                external_message_id=(
-                    f"eval-{case['id']}-{i}-{settings.eval_ablation or 'full'}-{RUN_NONCE}"
-                ),
+                external_message_id=f"eval-{case['id']}-{i}-{run_tag}-{RUN_NONCE}",
                 raw_payload={"eval_case": case["id"], "turn": i},
             )
             await session.commit()
@@ -261,13 +284,15 @@ async def judge_case(case: dict, result: dict) -> JudgeVerdict | None:
     return outcome.structured
 
 
-async def run_all(cases: list[dict], *, ablation: str | None, skip_judge: bool) -> list[dict]:
+async def run_all(
+    cases: list[dict], *, ablation: str | None, skip_judge: bool, run_tag: str
+) -> list[dict]:
     settings.eval_ablation = ablation
     rows = []
     for case in cases:
         start = time.monotonic()
         try:
-            result = await run_case(case)
+            result = await run_case(case, run_tag=run_tag)
         except Exception as exc:  # noqa: BLE001 - one bad case must not kill the run
             rows.append({"case": case, "error": str(exc)})
             print(f"  [ERROR] {case['id']}: {exc}", file=sys.stderr)
@@ -379,6 +404,10 @@ async def main() -> None:
     parser.add_argument("--sweep-confidence", action="store_true")
     parser.add_argument("--skip-judge", action="store_true")
     parser.add_argument("--bucket", default=None, help="only run cases from one bucket")
+    parser.add_argument(
+        "--sweep-only", action="store_true",
+        help="skip the config loop (full/ablations) - just run --sweep-confidence",
+    )
     args = parser.parse_args()
 
     cases = load_cases()
@@ -405,16 +434,22 @@ async def main() -> None:
         "runs": {},
     }
 
-    configs = ["full"]
-    if args.ablation:
+    configs: list[str] = []
+    if args.sweep_only:
+        pass
+    elif args.ablation:
         configs = [args.ablation]
     elif args.all_ablations:
         configs = ["full", "no_rag", "no_verify", "dense_only", "all_tools"]
+    else:
+        configs = ["full"]
 
     for config_name in configs:
         ablation = None if config_name == "full" else config_name
         print(f"\n=== Running config: {config_name} ({len(cases)} cases) ===")
-        rows = await run_all(cases, ablation=ablation, skip_judge=args.skip_judge)
+        rows = await run_all(
+            cases, ablation=ablation, skip_judge=args.skip_judge, run_tag=config_name
+        )
         summary = summarize(rows)
         print_table(config_name, summary)
         report["runs"][config_name] = {
@@ -444,7 +479,9 @@ async def main() -> None:
         try:
             for threshold in (0.4, 0.5, 0.6, 0.7, 0.8):
                 settings.intent_confidence_min = threshold
-                rows = await run_all(cases, ablation=None, skip_judge=True)
+                rows = await run_all(
+                    cases, ablation=None, skip_judge=True, run_tag=f"sweep-{threshold}"
+                )
                 summary = summarize(rows)
                 sweep_results[threshold] = {
                     "escalation_recall": summary.get("escalation_recall"),
