@@ -9,6 +9,7 @@ account_issue/complaint fall back to knowledge-only for now.
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.state import AgentState
+from app.config import settings
 
 ORDER_TOOLS = [
     "list_recent_orders", "get_order", "track_shipment",
@@ -35,6 +36,11 @@ _KNOWLEDGE_INTENTS = {
 
 
 def tools_for_group(tool_group: str) -> list[str]:
+    # Stage 11 "all tools exposed" ablation: simulates removing plan_node's
+    # restriction by handing over the full order+transaction toolset
+    # whenever any tools would normally be used at all.
+    if settings.eval_ablation == "all_tools" and tool_group in ("orders", "transactions"):
+        return ORDER_TOOLS + TRANSACTION_TOOLS
     return {"orders": ORDER_TOOLS, "transactions": TRANSACTION_TOOLS}.get(tool_group, [])
 
 

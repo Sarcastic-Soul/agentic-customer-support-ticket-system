@@ -767,10 +767,84 @@ the user, same pattern as Stage 7)
     sent).
 
 ## Stage 11 — Evaluation
-**Status:** not started
+**Status:** harness complete, full run deferred (user's explicit choice - see notes)
 
-## Stage 11 — Evaluation
-**Status:** not started
+- Works: `eval/dataset/tickets.jsonl` - 50 hand-written cases matching the
+  build-stages composition table exactly (16 straightforward / 8 multi-tool
+  or multi-turn / 10 must-escalate / 6 knowledge-gap / 6 adversarial / 4
+  noisy), referencing real seeded orders/customers/transactions (queried
+  from the dev DB, not guessed from the seed script) so labels are checkable
+  against real ground truth - e.g. the duplicate-charge case (`ORD-10003`,
+  4200) is labeled `escalated` because it exceeds `AUTO_REFUND_CEILING`
+  (1000) even though it has a matching-fault transaction, per the seeded
+  "Refund approval limits" KB doc, not a guess. `eval/run_eval.py` - replays
+  every turn of every case through the real `ingest_message` pipeline and
+  the real graph (`run_agent`), scores deterministically (intent, outcome,
+  tool-subset match, `must_mention`/`must_not_mention`), and judges with
+  `LLMRole.judge` (Groq `openai/gpt-oss-120b`, structured `JudgeVerdict`)
+  for correctness/groundedness/hallucination. Prints a Markdown table and
+  writes timestamped JSON to `eval/reports/`. `--ablation`,
+  `--all-ablations`, `--sweep-confidence`, `--bucket`, `--limit`,
+  `--skip-judge` flags. Four ablation hooks added behind one new
+  `EVAL_ABLATION` setting (`None` in production, zero behavior change):
+  `retrieve_node` short-circuits to `no_rag`, `hybrid_search` drops sparse
+  hits for `dense_only`, `verify_node` skips only the LLM groundedness check
+  (not the deterministic escalation triggers) for `no_verify`, and
+  `plan.tools_for_group` hands over the full toolset for `all_tools`.
+  **Escalated tickets pause the graph at `interrupt()` and never reach
+  `respond_node`, so `AgentRun.outcome`/`state["outcome"]` is never set to
+  `"escalated"`** - the harness reads the ticket's own `status` instead,
+  which is reliably set before the interrupt. Live-verified this is correct
+  by running a real escalate-bucket case and confirming the harness read
+  back exactly what really happened (see notes).
+  **Real bug fixed while building this**: `LLMRole.judge` was going through
+  the normal primary/fallback dance (`settings.llm_provider` first), but
+  `judge_model` (`openai/gpt-oss-120b`) is a Groq model id - every judge
+  call was guaranteed to fail its first attempt against Gemini before
+  falling back, burning a retry (and Gemini quota) for nothing, every time.
+  `app/llm/registry.py`'s `LLMClient.__init__` now sends the judge role
+  straight to `settings.llm_fallback_provider`, matching
+  `docs/08-evaluation.md`'s explicit intent ("deliberately a different
+  provider from the system under test"). Verified live:
+  `LLMClient(LLMRole.judge)._candidates == [("groq", "openai/gpt-oss-120b")]`,
+  and a real structured judge call round-tripped correctly.
+- Known broken: none in the harness itself.
+- Skipped (by explicit user choice, asked via AskUserQuestion mid-stage):
+  the full 50-case run across all 5 configs (full + 4 ablations) plus the
+  `INTENT_CONFIDENCE_MIN` sweep. Deferred rather than run now because
+  Gemini's free tier was visibly degraded while building this (see notes) -
+  running the full matrix through it right now would have been slow and a
+  poor use of a scarce daily quota for numbers that would need re-running
+  once the API recovered anyway. The harness is ready; `make eval` (add
+  `--all-ablations --sweep-confidence` for the complete report) is a
+  from-fresh-seed rerun away.
+- Notes:
+  - **Live-verified the harness mechanics**, not the full dataset: one
+    straightforward case end-to-end (correct intent, correct outcome,
+    correct resolution, real reply persisted and scored against
+    `must_mention`), one escalate-bucket case (confirmed the
+    ticket-status-based outcome detection correctly reported `"answered"`
+    when the model did *not* escalate - a real, useful finding: it
+    classified "refund me because it says delivered but never arrived" as
+    `delivery_issue` rather than `refund_request` and answered instead of
+    escalating a goodwill request above the ceiling, which is legitimate
+    eval signal for the real run, not a harness bug), and one direct
+    judge-role call.
+  - **Gemini's free tier was genuinely struggling during this work**, not
+    just quota-exhausted: alongside the expected `RESOURCE_EXHAUSTED` 429s
+    (20/day limit on `gemini-3.8-flash`, already hit during Stage 10), one
+    call hit a `503 UNAVAILABLE "This model is currently experiencing high
+    demand"` that took over two minutes to even respond before failing
+    over to Groq. The existing quota-fast-fail logic
+    (`_is_quota_exhausted`) correctly skips retries on a 429, but a slow
+    503 still eats its full retry budget - worth knowing when timing the
+    real run, though not worth a special case for one observed instance.
+  - `RUN_NONCE` (a per-invocation timestamp folded into every
+    `external_message_id`) was added after a first smoke-test attempt
+    silently deduped against a killed prior run's half-finished ticket and
+    reported an empty, misleadingly-failing result - re-running the harness
+    now always starts fresh regardless of what a previous, possibly
+    interrupted run left behind.
 
 ## Stage 12 — Demo and writeup
 **Status:** not started

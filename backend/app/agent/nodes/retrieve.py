@@ -4,6 +4,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.state import AgentState
 from app.agent.steps import record_step
+from app.config import settings
 from app.rag.search import hybrid_search
 
 
@@ -20,6 +21,15 @@ async def retrieve_node(state: AgentState, config: RunnableConfig) -> dict:
         await record_step(
             session, run_id=state["run_id"], node="retrieve",
             output={"skipped": True, "reason": "tool_group is 'none'"},
+        )
+        return {"retrieved": []}
+
+    if settings.eval_ablation == "no_rag":
+        # Stage 11 ablation: parametric memory only - answer_node still runs,
+        # it just never sees any retrieved context.
+        await record_step(
+            session, run_id=state["run_id"], node="retrieve",
+            output={"skipped": True, "reason": "eval_ablation=no_rag"},
         )
         return {"retrieved": []}
 

@@ -4,6 +4,7 @@ from app.agent.nodes.answer import format_context, format_tool_results
 from app.agent.prompts import load_prompt
 from app.agent.state import AgentState
 from app.agent.steps import record_step
+from app.config import settings
 from app.llm.registry import get_llm
 from app.llm.roles import LLMRole
 
@@ -30,6 +31,16 @@ async def verify_node(state: AgentState, config) -> dict:
 
     if any(r["result"].get("requires_human") for r in state["tool_results"]):
         return {"escalation_reason_code": "policy_limit_exceeded", "escalation_priority": "P2"}
+
+    if settings.eval_ablation == "no_verify":
+        # Stage 11 ablation: the deterministic escalation triggers above stay
+        # (they're routing correctness, not groundedness) - only the LLM
+        # grounded/answers_question/policy_safe check is skipped.
+        await record_step(
+            session, run_id=state["run_id"], node="verify",
+            output={"skipped": True, "reason": "eval_ablation=no_verify"},
+        )
+        return {"verify_passed": True}
 
     prompt = load_prompt(
         "verify",

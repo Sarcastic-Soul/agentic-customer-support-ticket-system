@@ -128,6 +128,14 @@ class LLMClient:
         primary_model, fallback_model = _ROLE_MODELS[role]
         if settings.llm_provider == "stub":
             self._candidates: list[tuple[str, str]] = [("stub", "stub")]
+        elif role == LLMRole.judge:
+            # judge_model is deliberately a different provider from the
+            # system under test (docs/08-evaluation.md), not the same
+            # primary/fallback pair every other role uses - going through
+            # llm_provider first would just be a guaranteed-wrong-model
+            # attempt burning a retry (and quota) before falling back here
+            # anyway.
+            self._candidates = [(settings.llm_fallback_provider, primary_model)]
         else:
             self._candidates = [
                 (settings.llm_provider, primary_model),

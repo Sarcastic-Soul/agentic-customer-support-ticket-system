@@ -96,5 +96,9 @@ class Settings(BaseSettings):
     # demo
     demo_mode: str = "live"  # live | replay
 
+    # eval ablations (Stage 11) - None in production; the eval harness sets
+    # this per run to knock out one piece of the pipeline at a time.
+    eval_ablation: str | None = None  # no_rag | no_verify | dense_only | all_tools
+
 
 settings = Settings()

@@ -77,7 +77,12 @@ async def hybrid_search(
     query_vec = embed_query(query)
 
     dense = await dense_hits(session, query_vec, settings.retrieval_top_k_dense)
-    sparse = await sparse_hits(session, query, settings.retrieval_top_k_sparse)
+    # Stage 11 "dense-only retrieval" ablation: no tsvector search at all.
+    sparse = (
+        []
+        if settings.eval_ablation == "dense_only"
+        else await sparse_hits(session, query, settings.retrieval_top_k_sparse)
+    )
 
     best_dense = dense[0][1] if dense else 0.0
     if best_dense < settings.retrieval_score_min and not sparse:
