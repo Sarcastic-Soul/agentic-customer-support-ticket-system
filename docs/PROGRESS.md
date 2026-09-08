@@ -847,7 +847,100 @@ the user, same pattern as Stage 7)
     interrupted run left behind.
 
 ## Stage 12 — Demo and writeup
-**Status:** not started
+**Status:** done (evaluation numbers in `docs/REPORT.md` §6 pending a full
+`make eval` run - see Stage 11 and that section for why)
+
+- Works: **Failure drills** (`backend/tests/test_failure_drills.py`) - every
+  LLM provider down now gets an honest customer message and a real
+  escalation (`app/workers/tasks.py::_escalate_on_failure`, new this stage -
+  see the real bug below); a tool raising is regression-tested against the
+  existing `execute_tool` error boundary (already correct, not a new fix);
+  "no Redis" and "no tunnel" verified/documented rather than unit-tested
+  (infra-level - see notes). **Concurrency check**: 50 simultaneous
+  conversations via the simulator, `LLM_PROVIDER=stub` - 50/50 requests
+  succeeded, the worker processed 51/51 jobs with zero errors and no
+  connection-pool exhaustion (`db_pool_size=5` against `max_jobs=10`).
+  **PII check** (`backend/tests/test_pii.py`, `app/core/pii.py`) - found
+  `messages.body_redacted` was schema-only with no redaction path anywhere
+  (see real bug below); now regex-grade card/OTP redaction wired into the
+  one ingestion choke point (`ingest_message`) and every prompt-building
+  read of `state["latest_message"]`/`history`. **`make demo`** - `make seed`
+  already truncates+reseeds every table (no separate `reset` target
+  needed), so `demo` now backgrounds api/worker/frontend and runs
+  `scripts/demo_scenario.py` against the live stack: policy question, a
+  real-data order-status lookup, and a large-refund-request that correctly
+  gets denied by policy and escalates - then prints instructions for the
+  two steps that need a human at the console. **Live-verified end to end**,
+  twice (the first run was killed by an artificial test-harness timeout,
+  not a real problem - see notes): all three automated steps completed
+  correctly against real Gemini/Groq, including the policy-denied refund
+  genuinely landing in the escalation queue with the correct deny reason
+  (`"refund amount 4200 exceeds the auto-approval ceiling of 1000.0"`).
+  `docs/REPORT.md` - architecture summary, every decision, every bug found
+  across all 12 stages with what caught it, hardening results, known
+  limitations, and what surprised us. Evaluation numbers section left as an
+  explicit, explained placeholder rather than fabricated.
+- Known broken: none against what's testable today.
+- Skipped: the full eval matrix (see Stage 11 and `docs/REPORT.md` §6); a
+  demo video (needs a human at a microphone - `scripts/demo_scenario.py`
+  is written so it can double as a script for recording one).
+- Notes:
+  - **Real bug, and the most significant one found this project**:
+    `messages.body_redacted` was listed as non-negotiable from
+    `docs/decisions/0003-prototype-scope.md`'s very first version, existed
+    correctly in the schema and every migration since Stage 1, and nothing
+    in eleven stages ever populated it or redacted anything before it
+    reached a prompt. The PII check existing as a specific, checkable Stage
+    12 task ("nothing card-like or OTP-like reaches a prompt", not just
+    "PII redaction exists") is what caught its own prerequisite being
+    entirely missing. Fixed with `app/core/pii.py`: card numbers (13-19
+    consecutive digits) redacted unconditionally; OTP-like codes only near
+    an explicit keyword ("otp", "verification code", "pin", ...), since a
+    bare "any 4-8 digit number" rule would also eat order numbers
+    (`ORD-10432`) and refund amounts (`4200`) that the agent genuinely
+    needs to reason about - regression-tested for both the redaction and
+    the false-positive it must avoid.
+  - **Real bug, found by design review while implementing the failure
+    drills**: `handle_message` had no safety net around `run_agent()` -
+    every LLM provider down, or any other unhandled exception, meant the
+    customer got total silence and the job just failed in arq with nothing
+    ever reaching them. `_escalate_on_failure` now guarantees an honest
+    message and a real, idempotency-guarded escalation (mirrors
+    `escalate_node`'s own replay guard, since arq may retry a failed job) -
+    deliberately zero LLM calls of its own, so it works in exactly the
+    scenario that triggers it.
+  - **Real bug, found live via `make demo` under today's degraded Gemini
+    free tier**: arq's default `job_timeout` (300s) was not enough for one
+    real ticket needing classify + a multi-round tool loop + verify, each
+    role paying the Gemini-429-then-Groq-fallback dance - arq killed the
+    job mid-flight and silently retried it as a *new* job, rather than
+    letting the original finish (which it would have, ~9s after the
+    timeout fired). Raised to 900s
+    (`app/workers/settings.py::WorkerSettings.job_timeout`) - this is
+    operational slack, not a change to the graph's own bounds
+    (`MAX_TOOL_CALLS`/`MAX_AI_TURNS` still apply). Not caught by any
+    30-second unit test; only surfaced by actually running the real demo
+    script against a genuinely slow API on a genuinely bad quota day -
+    exactly the kind of thing this project's live-verification discipline
+    exists to catch, one stage away from the very end.
+  - **Small correctness fix in the same investigation**: the worker's own
+    `handle_message_done` log line read `outcome=final_state["outcome"]`,
+    which `answer_node` sets to `"answered"` *before* `verify_node` ever
+    runs - if verify then routes to `escalate_node` instead of
+    `respond_node`, the graph pauses at `interrupt()` with that stale value
+    still sitting in state, so a correctly-escalated ticket logged
+    `outcome=answered`. `eval/run_eval.py` already worked around this
+    (Stage 11) by reading the ticket's own status; `handle_message` now
+    does the same before logging, so the worker log is trustworthy for
+    anyone debugging a live run rather than only the DB being trustworthy.
+  - **"No Redis" verified live**, not just reasoned about: stopped the
+    Redis container, hit `/dev/simulate/web` - the raw message was already
+    persisted (visible in `messages`) before the enqueue attempt raised, the
+    request failed loudly (500), and restarting Redis required no manual
+    recovery - the very next request succeeded immediately. "No tunnel" is
+    design-level (`docs/09-risks.md` R5): WhatsApp needs a public tunnel to
+    receive Twilio webhooks, but the demo script's own steps all have a
+    web-chat/simulator equivalent that needs none.
 
 ---
 
@@ -863,6 +956,14 @@ verbatim into the report's limitations section.
 - Email and WhatsApp's real-provider tests (a real mailbox, a real phone
   number) are manual steps for whoever runs the demo, not automated -
   Stages 7/8. The WhatsApp voice-note path inherits the same limitation.
+- The full 50-case x 5-ablation evaluation matrix has not been run to
+  completion - Stage 11/`docs/REPORT.md` §6. The harness is ready; it needs
+  LLM quota headroom this project's free-tier keys didn't have on the day
+  it was built.
+- PII redaction is regex-grade by design decision
+  (`docs/decisions/0003-prototype-scope.md`), not ML-grade - it will miss
+  card/OTP formats it wasn't written for, same tolerance as every other
+  "regex-grade" claim in this project.
 
 ## Things that surprised us
 
@@ -880,3 +981,19 @@ blueprint assumed. Good report material, and it stops the same surprise twice.
   exactly the kind of thing that looks like a test-runner bug and isn't.
   `uv pip install -e .` fixed it. Worth checking first if `pytest` ever
   can't find `app` again after a dependency change.
+- The exact same shape of surprise, worse, in Stage 12: `messages.
+  body_redacted` was explicitly non-negotiable from the very first version
+  of the scope decision, present correctly in the schema the whole time,
+  and never once populated. A schema column existing is not the same as a
+  feature existing - the same lesson as `ResponseStyle` above, but for
+  something the project's own docs called out as required from day one,
+  which is a sharper reminder that "it's in the schema/protocol" is not
+  evidence something works.
+- A single real ticket, under a genuinely degraded free-tier API, took long
+  enough (classify + a multi-round tool loop + verify, each paying a
+  provider-fallback delay) to exceed arq's default 300s job timeout and get
+  silently killed and retried mid-flight - found only by running the actual
+  demo script against the actual live API on a bad quota day, not by any
+  unit test. `MAX_TOOL_CALLS`/`MAX_AI_TURNS` bound the graph's own work; an
+  operational timeout around the whole job is a separate bound that also
+  needs to be generous enough for a slow day, and 300s wasn't.

@@ -16,3 +16,12 @@ class WorkerSettings:
     cron_jobs = [cron(poll_inbox_job, second={0, 30})]
     redis_settings = _redis_settings()
     max_jobs = 10
+    # arq's default (300s) isn't enough headroom on a degraded free-tier day:
+    # one real ticket, live-tested during Stage 12, took over 300s across
+    # classify + a multi-round tool loop + verify, each role paying Gemini's
+    # 429-then-Groq-fallback dance - arq killed and retried it mid-flight.
+    # MAX_TOOL_CALLS/MAX_AI_TURNS already bound the graph's own loop; this is
+    # just enough operational slack that provider slowness doesn't look like
+    # a hang and trigger a redundant retry (and a second AgentRun) on top of
+    # a run that would have finished on its own.
+    job_timeout = 900

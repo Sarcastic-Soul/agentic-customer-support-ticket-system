@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.conversation import get_or_open_conversation, get_or_open_ticket
 from app.core.identity import resolve_customer
+from app.core.pii import redact_pii
 from app.models import Message, RawEvent
 
 
@@ -54,10 +55,14 @@ async def ingest_message(
 
     # Assign the relationship object (not just conversation_id) so callers can
     # read message.conversation without triggering an async lazy-load.
+    # body_redacted is what every prompt-building path reads (prepare_node's
+    # history, handle_message's latest_message) - body itself is kept
+    # unredacted for audit, same as raw_events never being edited.
     message = Message(
         conversation=conversation,
         role="customer",
         body=text,
+        body_redacted=redact_pii(text),
         channel=channel,
         direction="inbound",
         external_message_id=external_message_id,

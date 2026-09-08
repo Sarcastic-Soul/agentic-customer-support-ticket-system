@@ -37,12 +37,20 @@ dev:
 	$(MAKE) frontend & \
 	wait
 
+# seed truncates+reseeds every table (app/seed/run.py) - this is the
+# "fresh, reproducible" reset docs/08-evaluation.md and CLAUDE.md call for,
+# there is no separate `reset` target.
 demo:
 	$(MAKE) up
 	$(MAKE) migrate
 	$(MAKE) seed
 	$(MAKE) ingest
-	$(MAKE) dev
+	@trap 'kill 0' EXIT INT TERM; \
+	$(MAKE) api & \
+	$(MAKE) worker & \
+	$(MAKE) frontend & \
+	$(BACKEND) python ../scripts/demo_scenario.py; \
+	wait
 
 eval:
 	$(BACKEND) python ../eval/run_eval.py

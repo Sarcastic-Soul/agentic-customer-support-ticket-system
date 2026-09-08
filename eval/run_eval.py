@@ -169,7 +169,7 @@ async def run_case(case: dict) -> dict:
                 channel=channel,
                 external_thread_id=external_thread_id,
                 message_id=message.id,
-                latest_message=message.body,
+                latest_message=message.body_redacted or message.body,
             )
             run_id = final_state.get("run_id") if isinstance(final_state, dict) else None
 

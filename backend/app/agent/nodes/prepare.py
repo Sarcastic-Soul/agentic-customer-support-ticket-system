@@ -26,8 +26,11 @@ async def prepare_node(state: AgentState, config: RunnableConfig) -> dict:
     # `latest_message`) - exclude it from history so it isn't duplicated.
     prior = messages[:-1] if messages else []
 
+    # body_redacted is only ever set on customer messages (see
+    # app/ingress/pipeline.py) - assistant messages fall back to body since
+    # there's nothing to redact from the AI's own output.
     history = [
-        {"role": m.role, "body": m.body}
+        {"role": m.role, "body": m.body_redacted or m.body}
         for m in prior
         if m.role in ("customer", "assistant")
     ]

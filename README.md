@@ -40,6 +40,84 @@ recorded for the dashboard and the evaluation harness.
 
 Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
 
+```mermaid
+flowchart TB
+    subgraph CH["1. Channel adapters (no LLM)"]
+        W["Web chat widget<br/>(WebSocket)"]
+        WA["WhatsApp<br/>(Twilio webhook)"]
+        EM["Email<br/>(IMAP poll / SMTP send)"]
+        VO["Voice notes<br/>(web-recorded, STT via Groq Whisper)"]
+    end
+
+    subgraph GW["2. Ingress gateway"]
+        NORM["Normalize to InboundMessage"]
+        DEDUP["Idempotency + dedupe"]
+        RAW["Persist raw event"]
+    end
+
+    subgraph CORE["3. Conversation core (deterministic)"]
+        IDENT["Identity resolution<br/>(channel,external_id) to customer"]
+        THREAD["Thread continuity"]
+        TSM["Ticket state machine"]
+    end
+
+    subgraph ORCH["4. Orchestrator - LangGraph"]
+        CLS["Classify intent + urgency"]
+        RET["Retrieve (hybrid RAG)"]
+        ACT["Tool loop"]
+        VER["Verify / groundedness gate"]
+        DEC["Resolve or escalate"]
+    end
+
+    subgraph TOOLS["5. Tool layer (typed, policy-checked)"]
+        KB["Knowledge tools"]
+        ORD["Order tools"]
+        TXN["Transaction tools"]
+        TKT["Ticket tools"]
+    end
+
+    subgraph POL["6. Policy + guardrails"]
+        AUTH["Action authorization<br/>(refund ceilings, windows)"]
+        PII["PII redaction"]
+        CONF["Confidence gate"]
+    end
+
+    subgraph HIL["7. Human in the loop"]
+        Q["Escalation queue"]
+        PKT["Handoff packet"]
+        CON["Agent console"]
+    end
+
+    subgraph DATA["8. Storage"]
+        PG[("PostgreSQL 18 + pgvector")]
+        RD[("Redis - queue, locks, pubsub")]
+    end
+
+    subgraph OBS["9. Observability"]
+        TR["agent_runs / agent_steps / tool_calls"]
+        MET["Metrics + cost"]
+    end
+
+    W --> NORM
+    WA --> NORM
+    EM --> NORM
+    VO --> NORM
+    NORM --> DEDUP --> RAW --> IDENT --> THREAD --> TSM --> CLS
+    CLS --> RET --> ACT --> VER --> DEC
+    ACT <--> TOOLS
+    TOOLS <--> POL
+    TOOLS <--> PG
+    DEC -->|confident| CH
+    DEC -->|not confident| Q
+    Q --> PKT --> CON
+    CON -->|human reply| CH
+    CON -->|resume| ORCH
+    ORCH --> TR
+    CORE --> PG
+    GW --> RD
+    TR --> MET
+```
+
 ## Documentation
 
 | Document | Contents |
@@ -59,9 +137,12 @@ Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
 
 Python 3.13 · FastAPI 0.141 · LangGraph 1.2 · PostgreSQL 18 + pgvector 0.8.6 ·
 Redis + arq · SQLAlchemy 2.0 + Alembic · Vite + React 19 + TanStack Router/Query
-+ Tailwind + shadcn/ui · `gemini-3.8-flash` primary with Groq `openai/gpt-oss-120b`
++ Tailwind · `gemini-3.8-flash` primary with Groq `openai/gpt-oss-120b`
 fallback · local `bge-small-en-v1.5` embeddings via fastembed ·
-Twilio WhatsApp sandbox · Gmail IMAP/SMTP · Parakeet TDT + Piper for voice.
+Twilio WhatsApp sandbox · Gmail IMAP/SMTP · Recharts for the metrics dashboard ·
+voice notes transcribed via Groq's hosted `whisper-large-v3`
+(`docs/decisions/0005-voice-stt-groq-fallback.md` explains why not a local
+model, given this build machine's measured RAM/GPU constraints).
 
 Versions verified 8 September 2026. Notably **not** used: `gemini-2.5-*`
 (a generation behind, and `gemini-2.0-flash` is shut down), Groq
@@ -79,13 +160,43 @@ make seed                     # synthetic customers, orders, transactions, KB
 make dev                      # api + worker + scheduler + frontend
 ```
 
+Or, to reproduce the Stage 6 demo script end to end in one command (resets the
+database, seeds and ingests fresh, starts everything, and runs the automated
+half of the scenario against the running stack):
+
+```bash
+make demo
+```
+
 - Customer web chat: http://localhost:5173/chat
-- Agent console: http://localhost:5173/console
-- Admin dashboard: not built yet (Stage 9)
+- Agent console (sign in, any seeded agent, password `dev-password`):
+  http://localhost:5173/login
+- Admin dashboard (tickets, reasoning trace, metrics, knowledge base — admin
+  role only for writes): http://localhost:5173/admin
 - API docs: http://localhost:8000/docs
 
 No API key? Set `LLM_PROVIDER=stub` for a deterministic fake model — the whole
-pipeline runs offline for tests and for developing the UI.
+pipeline runs offline for tests, for developing the UI, and for the Stage 12
+concurrency check.
+
+## Trying voice for real
+
+The web chat widget has a microphone button (`useVoiceRecorder`,
+`app/channels/voice.py`) that records a short clip, uploads it to
+`POST /channels/voice/upload`, transcribes it via Groq's hosted Whisper, and
+runs the transcript through the exact same pipeline every other channel
+uses — the orchestrator needed zero changes for voice (see
+`docs/PROGRESS.md` Stage 10). WhatsApp voice notes are transcribed the same
+way, automatically, no setup needed beyond `GROQ_API_KEY`.
+
+To try the web widget's recording button:
+
+1. Set `VOICE_ENABLED=true` in `.env` (default `false`, same opt-in pattern
+   as email) and make sure `GROQ_API_KEY` is set.
+2. Open http://localhost:5173/chat, allow microphone access, and hold the
+   🎤 button to record a question like "what's the status of my order".
+3. The transcript appears as your message; the reply comes back short and
+   plain (no markdown, no links) via `ResponseStyle`, same as WhatsApp.
 
 ## Trying WhatsApp for real
 
@@ -155,10 +266,23 @@ reads as a trade-off rather than an oversight.
 
 ## Project status
 
-Stages 0-7 built and tested (Stage 6, the milestone, is live-verified against
-real Gemini/Groq — see `docs/PROGRESS.md`). See
-[`docs/07-build-stages.md`](docs/07-build-stages.md) for the stage checklists
-and [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is actually built, stage
-by stage, including real bugs found and fixed along the way.
-**Stage 6 is the milestone**: a complete vertical slice with escalation and the
-human console. Everything after it is breadth.
+Stages 0-11 built and tested; Stage 12 (hardening, demo, writeup) in
+progress. See [`docs/07-build-stages.md`](docs/07-build-stages.md) for the
+stage checklists and [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is
+actually built, stage by stage, including real bugs found and fixed along
+the way — including several found live, not in a unit test: a
+`MissingGreenlet` on an `onupdate`-expired column (Stage 9), a stale
+editable install silently breaking `pytest` after a dependency change
+(Stage 10), and PII redaction (`messages.body_redacted`) turning out to be
+schema-only with no actual redaction path anywhere until Stage 12's PII
+check caught it.
+
+**Stage 6 is the milestone**: a complete vertical slice with escalation and
+the human console. Stage 11 (the evaluation harness, `eval/run_eval.py`,
+50 hand-labelled cases) is the other one — it's what turns "the AI resolves
+customer issues" from a claim into a measurable result. A full run across
+every ablation is one `make eval --all-ablations --sweep-confidence` away
+once there's LLM quota headroom to spend on it; see `docs/PROGRESS.md`
+Stage 11 for why it wasn't run to completion during development (both
+`gemini-3.8-flash`'s 20-requests/day free tier and a live API slowdown, not
+a harness limitation).

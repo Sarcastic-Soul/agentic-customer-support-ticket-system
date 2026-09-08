@@ -31,7 +31,7 @@ flowchart TB
         W["Web chat widget<br/>(WebSocket)"]
         WA["WhatsApp<br/>(Twilio webhook)"]
         EM["Email<br/>(IMAP poll / SMTP send)"]
-        VO["Voice notes<br/>(deferred, stage 10)"]
+        VO["Voice notes<br/>(web-recorded, STT via Groq Whisper)"]
     end
 
     subgraph GW["2. Ingress gateway"]
