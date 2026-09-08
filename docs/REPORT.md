@@ -263,9 +263,5 @@ limitations" as they were found:
 
 ## 9. Demo video
 
-Not produced as part of this report — recording, narrating, and editing a
-walkthrough video needs a human at a microphone, which this session doesn't
-have. `scripts/demo_scenario.py` (invoked by `make demo`) is written to
-double as a script for recording one: it narrates each automated step to
-stdout in the order a viewer would want to see, with a clear pause point
-before the human console steps.
+Not produced as part of this report — recording and editing a walkthrough
+video needs a human at a microphone, which this session doesn't have.

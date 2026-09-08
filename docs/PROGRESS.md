@@ -882,8 +882,7 @@ the user, same pattern as Stage 7)
   explicit, explained placeholder rather than fabricated.
 - Known broken: none against what's testable today.
 - Skipped: the full eval matrix (see Stage 11 and `docs/REPORT.md` §6); a
-  demo video (needs a human at a microphone - `scripts/demo_scenario.py`
-  is written so it can double as a script for recording one).
+  demo video (needs a human at a microphone).
 - Notes:
   - **Real bug, and the most significant one found this project**:
     `messages.body_redacted` was listed as non-negotiable from
