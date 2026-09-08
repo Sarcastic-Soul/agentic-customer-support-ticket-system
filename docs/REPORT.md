@@ -1,10 +1,10 @@
 # Final report
 
 **Project:** Agentic AI customer support ticket system
-**Status at time of writing:** Stages 0-11 complete, Stage 12 in progress
-(this report is being written as part of Stage 12; the evaluation numbers
-section is a placeholder pending a full `make eval` run — see that section
-for why, and how to fill it in).
+**Status at time of writing:** all 12 stages complete. The one open item is
+§6's evaluation table, which needs a clean run against a daily LLM quota
+that isn't already spent — the harness itself is finished and live-verified
+(see §6 for the full story, including four real bugs it took to get there).
 
 ## 1. What this is
 
@@ -162,43 +162,78 @@ the evidence for it, not just the claim:
   against the running stack — policy question, real-data order-status
   lookup, and a large-refund-request-that-exceeds-policy — printing
   instructions for the two steps that need an actual human at the console
-  (claim, reply, and the customer seeing it). Live-verified: steps 1-2
-  completed correctly (`outcome=answered`, real citations, real tool
-  results) against real Gemini/Groq; step 3 was still in flight against a
-  visibly slow Gemini free tier at the time of this report (see §6) but the
-  mechanism itself — dedupe-safe reset, background service startup, health
-  polling before firing requests — is confirmed working.
+  (claim, reply, and the customer seeing it). Live-verified end to end
+  against real Gemini/Groq: steps 1-2 completed correctly (`outcome=
+  answered`, real citations, real tool results), and step 3's refund
+  request genuinely landed in the escalation queue with the correct policy
+  reason (`"refund amount 4200 exceeds the auto-approval ceiling of
+  1000.0"`) — the whole scenario, including the parts of it later reused as
+  eval-harness smoke tests, ran correctly under a visibly degraded Gemini
+  free tier, just slowly (see §6).
 
-## 6. Evaluation — pending a full run
+## 6. Evaluation — harness proven correct live, numbers pending a clean quota window
 
 `eval/run_eval.py` and `eval/dataset/tickets.jsonl` (50 cases, matching the
 composition table in `docs/08-evaluation.md` exactly: 16 straightforward, 8
 multi-tool/multi-turn, 10 must-escalate, 6 knowledge-gap, 6 adversarial, 4
-noisy) are complete and mechanically verified — see `docs/PROGRESS.md`
-Stage 11 for exactly what was live-tested (individual cases across every
-bucket, the ticket-status-based escalation detection, the judge role fix).
+noisy, each grounded in real seeded orders and customers rather than
+invented data) are complete. Getting there took a full live-debugging
+session against real APIs, which is worth reporting honestly rather than
+smoothing over, because it is itself evidence the harness now works: four
+real bugs were found and fixed by actually running it, not by inspection.
 
-**The full 50-case × 5-config (full + 4 ablations) run, plus the
-`INTENT_CONFIDENCE_MIN` sweep, was not executed to completion during
-development.** This was a deliberate choice, not an oversight: while
-building Stage 11, `gemini-3.8-flash`'s free tier (20 requests/day) was
-exhausted from earlier testing that same day, and one call hit a `503
-"experiencing high demand"` that took over two minutes to fail over. A full
-run through a visibly degraded API would have produced numbers that needed
-re-running anyway once the API recovered, at the cost of a scarce daily
-quota. The harness's fallback logic (quota-aware fast-fail, then Groq)
-handled this correctly, just slowly.
+**Bugs found running the harness for real, each fixed and re-verified:**
 
-**To fill in this section:** run, from `backend/`:
+1. The confidence sweep's deduplication key didn't vary per threshold pass,
+   so every sweep run silently no-op'd against the "full" config run moments
+   earlier and reported empty results dressed up as pass/fail.
+2. Several cases share one real seeded customer (needed for real order
+   history); because conversations key on `(channel, thread id)` alone,
+   reusing the customer's phone number as the thread id merged them into one
+   shared conversation — once any case escalated it, every later case
+   against that customer silently no-op'd for the rest of the run.
+3. A hallucinated tool name from `gemini-3.5-flash-lite` crashed the graph
+   with an uncaught `KeyError`, a rougher failure path than the one
+   `execute_tool` already handles for a tool that runs but fails.
+4. The LLM judge was scoring replies with no access to what the agent
+   actually retrieved or looked up — grading blind made every specific,
+   correctly-grounded detail (a KB-cited policy window, a system-generated
+   ticket reference) look unverifiable, inflating a measured 57%
+   hallucination rate on facts nothing had actually invented.
+
+Full technical detail, including the exact fixes, is in `docs/PROGRESS.md`
+Stage 11's "Live debugging session" — kept there rather than duplicated here
+so this section stays about the result, not the archaeology.
+
+**Why there's no final table yet.** By the time bug 4 was diagnosed and
+fixed, this session had exhausted every model viable for the reasoning role
+across every provider available to it in a single day: `gemini-3.8-flash`
+(20 requests/day), `gemini-3.5-flash-lite` (500/day), and Groq
+`openai/gpt-oss-120b` (200,000 tokens/day — confirmed against Groq's own
+usage dashboards, not assumed). That is a real, three-way daily quota wall,
+not a harness limitation; a genuinely clean 50-case × 5-config run, live
+mid-session, got 34 cases through the `full` configuration correctly before
+hitting it, with zero contamination and zero silent empty results — the
+harness itself is no longer in question, only the day's remaining budget.
+
+A useful side effect of chasing the latency down: `app/llm/registry.py` now
+proactively paces every LLM call against each model's real requests-per-
+minute ceiling before making it, instead of firing immediately and
+reactively retrying after a 429 — a genuine Gemini `503 "experiencing high
+demand"` was measured taking up to 100 seconds per call before falling back,
+because it doesn't match the existing quota-exhaustion fast path. Covered by
+eleven deterministic tests.
+
+**To fill in this section once quota allows:**
 
 ```bash
+# from backend/, against a freshly seeded database
 python ../eval/run_eval.py --all-ablations --sweep-confidence
 ```
 
-against a freshly seeded database (`make seed && make ingest` first, or just
-`make demo` and Ctrl-C once services are up). It prints a Markdown table per
-configuration and writes timestamped JSON to `eval/reports/`. Paste the
-"full" config's table here, then the ablation comparison:
+Prints a Markdown table per configuration and writes timestamped JSON to
+`eval/reports/`. Paste the "full" config's table here, then the ablation
+comparison:
 
 | Configuration | Resolution rate | Groundedness | Hallucination | Escalation recall | Cost/ticket |
 |---|---|---|---|---|---|
@@ -232,8 +267,9 @@ limitations" as they were found:
   self-hosted trace UI, CI, mypy, coverage gates, real load testing,
   RFC-7807 error bodies, and cursor pagination are genuinely out of scope,
   not cut corners — see `docs/07-build-stages.md`.
-- The full evaluation matrix (§6) needs a rerun once Gemini's daily quota
-  isn't already spent from the same day's development work.
+- The full evaluation matrix (§6) needs a rerun once at least one of
+  Gemini's two tiers or Groq's `gpt-oss-120b` has daily quota headroom again
+  — this session spent all three chasing the harness bugs down.
 
 ## 8. Things that surprised us
 
@@ -260,6 +296,15 @@ limitations" as they were found:
   it import" and "does pytest pass" are not the same question as "does it
   work," for exactly the class of bug async Python and package tooling
   produce.
+- The evaluation harness's own LLM judge had a measurement bug that
+  inflated its headline metric: grading with no access to what the agent
+  actually retrieved made a correctly-cited policy number and a real,
+  system-generated ticket reference both look like fabrications, driving a
+  measured 57% hallucination rate that was substantially an artifact of the
+  judge prompt, not the system under test. Worth remembering for any future
+  LLM-as-judge setup: the instrument doing the measuring needs the same
+  scrutiny as the thing being measured, and a suspiciously bad number is as
+  likely to be a broken ruler as a broken product.
 
 ## 9. Demo video
 

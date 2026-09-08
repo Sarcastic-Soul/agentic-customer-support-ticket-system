@@ -767,7 +767,8 @@ the user, same pattern as Stage 7)
     sent).
 
 ## Stage 11 — Evaluation
-**Status:** harness complete, full run deferred (user's explicit choice - see notes)
+**Status:** harness complete and live-debugged end to end; a full clean run
+is one quota-reset away (see "Live debugging session" below)
 
 - Works: `eval/dataset/tickets.jsonl` - 50 hand-written cases matching the
   build-stages composition table exactly (16 straightforward / 8 multi-tool
@@ -845,6 +846,91 @@ the user, same pattern as Stage 7)
     reported an empty, misleadingly-failing result - re-running the harness
     now always starts fresh regardless of what a previous, possibly
     interrupted run left behind.
+
+### Live debugging session (post-Stage-12)
+
+Attempting a real full run - 50 cases × 5 configs plus the confidence sweep -
+surfaced four more real bugs, all found by actually running the thing against
+live APIs, none of them reachable by a unit test. In order:
+
+1. **Sweep results were silently empty.** `run_case()`'s `external_message_id`
+   only varied by `settings.eval_ablation`, which the confidence sweep never
+   touches - every threshold pass deduped against the "full" config run
+   moments earlier and reported an instant, misleadingly-passing/failing
+   result with no graph run at all. Fixed by threading an explicit `run_tag`
+   (config name, or `sweep-{threshold}`) through `run_all()`/`run_case()`.
+2. **Cases sharing a real customer contaminated each other.** Several cases
+   need a real seeded customer for real order history, and multiple cases
+   reuse the same one (e.g. five different cases all use customer 5's
+   WhatsApp number). Conversations key on `(channel, external_thread_id)`
+   alone - reusing the customer's real phone number as the thread id meant
+   every case sharing that customer landed in *one* conversation, so once
+   any of them escalated (by design - that is what
+   `track-then-escalate-followup` is for), the ticket stayed escalated and
+   every later case against that customer silently no-op'd for the rest of
+   the run. Fixed by resolving the real customer identity for
+   `sender_external_id` (so order history still matches) while giving every
+   case its own synthetic `external_thread_id` (so conversations never
+   cross case boundaries).
+3. **A hallucinated tool name crashed the graph.** `gemini-3.5-flash-lite`
+   called a tool name (`initiate_initiate_return_wait_...`) that was never
+   offered in its schema. `act_node` looked it up with a raw
+   `get_tool_spec()` dict access - uncaught `KeyError`, propagating out of
+   the graph entirely, unlike a real tool *execution* failure, which
+   `execute_tool` already turns into a structured error the model can react
+   to. Fixed the same way: an unknown tool name now becomes a
+   `{"error": "unknown_tool", ...}` result fed back to the model instead of
+   crashing the turn. (In production this would have hit Stage 12's new
+   `_escalate_on_failure` safety net either way - the customer still
+   wouldn't have gone silent - but recovering inline is strictly better than
+   needing the safety net at all.)
+4. **The judge was grading blind.** `judge_case()`'s prompt gave the judge
+   only the customer's message and the agent's reply, no access to what the
+   agent actually retrieved or looked up. Reviewing the completed run's
+   judge verdicts showed this made almost every specific, correctly-grounded
+   detail look "unverifiable" - the 24-hour cancellation window, the 7-day
+   return window, and system-generated escalation reference numbers were
+   flagged as hallucinated across most of the 49-case dataset, substantially
+   inflating the measured 57% hallucination rate on facts that were never
+   invented. Fixed by passing the judge the same retrieved KB context and
+   tool results the agent had, plus the real ticket reference (explicitly
+   noted as a legitimate system id, not an invented claim), and by scoring
+   an honest escalation/deferral as *correct* when the evidence genuinely
+   doesn't support answering directly, rather than penalizing it for not
+   resolving the ticket outright.
+
+**A genuine three-way quota wall, hit live, not simulated:** by the time bug
+4 was found and fixed, this session had exhausted every model viable for the
+reasoning role, across every provider tried: `gemini-3.8-flash` (20
+requests/day), `gemini-3.5-flash-lite` (500 requests/day), and Groq
+`openai/gpt-oss-120b` (200,000 tokens/day - confirmed via Groq's own
+dashboard graphs, not assumed; RPM/TPM headroom was never the constraint,
+daily token budget was). A full, trustworthy run needs to wait for at least
+one of these to reset.
+
+**A real, useful side effect: `_RateLimiter`.** Chasing why individual calls
+were taking 100-150s surfaced a genuine root cause worth fixing regardless of
+the eval: a Gemini `503 "experiencing high demand"` doesn't match
+`_is_quota_exhausted`'s marker list (only 429/quota-shaped errors do), so it
+burns the *entire* retry-with-backoff budget - measured at up to ~100s for
+one call - before ever falling back to Groq, which then answers quickly.
+`app/llm/registry.py::_RateLimiter` now proactively paces every attempt
+against each model's real RPM ceiling (measured against the actual usage
+dashboards: `gemini-3.8-flash` 5, `gemini-3.5-flash-lite` 15, Groq
+`openai/gpt-oss-*` 30) in a sliding 60s window, before the request is even
+made - self-inflicted throttling from firing faster than the real ceiling
+stops happening at all, rather than being retried after the fact. Eleven
+deterministic tests (`tests/test_llm_registry.py`, a fake clock, no real
+sleeping) cover the pacing math and the `LLMClient` wiring.
+
+**What's left:** the harness itself is now correct on every axis found
+above, live-verified via a real (if quota-truncated) 50-case run that got
+34/50 through the `full` config cleanly before hitting the Groq TPD wall,
+with zero contamination and zero silent empty results. Once any provider's
+daily quota resets, `MODEL_REASON=gemini-3.5-flash-lite python
+../eval/run_eval.py --sweep-confidence` (or the Groq equivalent, see the
+command that surfaced bug 4 above) should complete cleanly and produce the
+numbers `docs/REPORT.md` §6 is still waiting on.
 
 ## Stage 12 — Demo and writeup
 **Status:** done (evaluation numbers in `docs/REPORT.md` §6 pending a full

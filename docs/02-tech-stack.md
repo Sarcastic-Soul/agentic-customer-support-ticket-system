@@ -138,7 +138,9 @@ Reranking: skipped unless retrieval quality proves to be the bottleneck. Hybrid
 search is adequate, and a cross-encoder adds a dependency and latency for a small
 win. If you do want it: `fastembed`'s `TextRerank`, or `flashrank`.
 
-### Speech (Stage 10, deferred)
+### Speech (Stage 10 — built; see below for what actually shipped)
+
+As planned, before implementation:
 
 | Role | Choice | Notes |
 |---|---|---|
@@ -146,6 +148,19 @@ win. If you do want it: `fastembed`'s `TextRerank`, or `flashrank`.
 | STT fallback | `faster-whisper` (`distil-large-v3`) | For languages Parakeet does not cover. Route by detected language. |
 | STT API fallback | Groq `whisper-large-v3` | If local inference is too slow on the demo machine. |
 | TTS | `piper` | Local, free, good enough for a spoken reply. |
+
+**What actually shipped:** straight to the STT API fallback row above —
+Groq's hosted `whisper-large-v3`, nothing local. The build machine measured
+~650MB free RAM with no GPU when Stage 10 started; Parakeet needs the NeMo
+toolkit (torch plus several GB of dependencies) and `faster-whisper` still
+needs real CPU inference time and model weights, neither practical on that
+hardware. This isn't a rejection of the plan above — the reasoning for
+Parakeet being the better choice on suitable hardware still holds, and
+`STT_PRIMARY`/`STT_FALLBACK` stay in `.env.example` for exactly that swap
+later. Full reasoning: `docs/decisions/0005-voice-stt-groq-fallback.md`.
+TTS (`piper`) was not built — the Stage 10 checklist marks it "Optional",
+and it was the one piece with no way to live-verify on this machine either
+(no audio output to check against).
 
 ### Provider abstraction
 

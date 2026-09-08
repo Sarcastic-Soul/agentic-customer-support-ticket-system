@@ -52,8 +52,9 @@ demo:
 	$(BACKEND) python ../scripts/demo_scenario.py; \
 	wait
 
+# make eval ARGS="--all-ablations --sweep-confidence"
 eval:
-	$(BACKEND) python ../eval/run_eval.py
+	$(BACKEND) python ../eval/run_eval.py $(ARGS)
 
 test:
 	$(BACKEND) pytest

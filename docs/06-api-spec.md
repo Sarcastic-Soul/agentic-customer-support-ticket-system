@@ -1,94 +1,121 @@
 # API Specification
 
-Base URL `http://localhost:8000`. Everything under `/api/v1`. Dashboard and
-console routes require a JWT bearer token; channel webhooks use provider
-signature verification instead.
+Base URL `http://localhost:8000`. No `/api/v1` prefix — this was in the
+original plan below before any code existed; the real routers use `/api/*`
+and `/channels/*` directly, and a version prefix bought nothing for a
+single-developer prototype with no external consumers. Dashboard and console
+routes require a JWT bearer token (`app/core/auth.py`); channel webhooks use
+provider signature verification instead.
+
+This reflects what `backend/app/api/` and `backend/app/ingress/` actually
+register, not a plan — see `docs/PROGRESS.md` for how each stage got built.
+
+## Health
+
+| Method | Path | Auth |
+|---|---|---|
+| `GET` | `/health` | none |
+
+Checks the database and Redis are reachable. `{"status": "ok" | "degraded", "checks": {"db": bool, "redis": bool}}`.
 
 ## Channel ingress
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/channels/whatsapp/webhook` | Twilio signature | Must return 200 within ~1s. Enqueues and returns. |
-| `POST` | `/channels/email/ingest` | internal token | Called by the IMAP poller task; also usable manually. |
+| `POST` | `/channels/whatsapp/webhook` | Twilio signature | Acknowledges and enqueues; the reply goes out later, asynchronously. |
+| `POST` | `/channels/whatsapp/status` | Twilio signature | Delivery-status callback (`queued`→`sent`→`delivered`/`failed`). |
 | `WS` | `/channels/web/ws?session_id=` | none (public widget) | Bidirectional web chat. |
-| `POST` | `/channels/voice/upload` | none | Stage 10. Multipart audio. |
-| `POST` | `/dev/simulate/{channel}` | dev only | Injects a synthetic `InboundMessage`. Build this first. |
+| `POST` | `/channels/voice/upload` | none, gated on `VOICE_ENABLED` | Multipart audio from the web widget's mic button; transcribes via Groq Whisper, returns `{"transcript": str}`. |
 
-Webhook contract: **acknowledge, then work.** The handler persists `raw_events`,
-dedupes on `(channel, external_message_id)`, enqueues `handle_message`, and
-returns. No LLM call ever happens inside a request handler.
+Email has no HTTP ingress at all — `app/workers/email_poll.py` is an arq
+cron job that polls IMAP directly; nothing needs to reach in.
 
-## Customer-facing
+Webhook contract: **acknowledge, then work.** The handler persists
+`raw_events`, dedupes on `(channel, external_message_id)`, enqueues
+`handle_message`, and returns. No LLM call ever happens inside a request
+handler.
+
+## Dev simulators
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/dev/simulate/web` | `{session_id, text, external_message_id?}` — exercises the real ingest pipeline without a WebSocket. |
+| `POST` | `/dev/simulate/whatsapp` | `{phone, text, external_message_id?}` — same shape, without Twilio or a tunnel. |
+| `POST` | `/dev/simulate/email` | `{from_email, text, subject?, external_message_id?, in_reply_to?}` — same shape, without IMAP or a mailbox. |
+
+Every channel got one of these before its real adapter, per the project's
+own convention — used throughout development and by `scripts/demo_scenario.py`.
+
+## Auth
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/auth/login` | `{email, password}` → `{access_token, role, full_name}`. |
+| `GET` | `/api/auth/me` | Bearer token → `{id, email, full_name, role}`. |
+
+One long-lived access token (`ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24`, argon2
+password hashes), no refresh-token flow — not worth the complexity for a
+prototype console. Two roles: `agent` (queue, tickets, KB reads) and `admin`
+(adds KB writes). Seeded agents all use password `dev-password`.
+
+## Admin — tickets and reasoning trace
+
+All routes below require a bearer token (any role) unless noted.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/v1/chat/session` | Start a web chat session, returns `session_id`. |
-| `GET` | `/api/v1/chat/{session_id}/messages` | Transcript (polling fallback for the WS). |
-| `GET` | `/api/v1/tickets/by-reference/{reference}` | Public status lookup by ticket reference. |
-
-## Admin — tickets
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/v1/admin/tickets` | Filter: `status`, `channel`, `intent`, `priority`, `assigned_to`, `q`, date range. Paginated. |
-| `GET` | `/api/v1/admin/tickets/{id}` | Ticket + conversation + events + linked order/transactions. |
-| `GET` | `/api/v1/admin/tickets/{id}/runs` | Agent runs with steps and tool calls — the "why did it do that" view. |
-| `PATCH` | `/api/v1/admin/tickets/{id}` | Change status, priority, assignee. Validated by the state machine. |
-| `POST` | `/api/v1/admin/tickets/{id}/note` | Internal note (not sent to the customer). |
-| `POST` | `/api/v1/admin/tickets/{id}/reply` | Human reply, delivered via the ticket's channel adapter. |
-
-## Admin — escalation queue / console
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/v1/console/queue` | Queued escalations, priority-ordered, optional `skill` filter. |
-| `POST` | `/api/v1/console/escalations/{id}/claim` | Atomic claim (`FOR UPDATE SKIP LOCKED`). 409 if already claimed. |
-| `POST` | `/api/v1/console/escalations/{id}/release` | Return to the queue. |
-| `GET` | `/api/v1/console/escalations/{id}` | Handoff packet + transcript + suggested draft and action. |
-| `POST` | `/api/v1/console/escalations/{id}/approve-action` | Execute the AI's suggested gated tool with `approved_by` recorded. |
-| `POST` | `/api/v1/console/escalations/{id}/return-to-ai` | Body `{note}`. Resumes the graph from its checkpoint. |
-| `POST` | `/api/v1/console/escalations/{id}/resolve` | Body `{summary, create_kb_article?}`. |
-| `WS` | `/api/v1/console/ws` | Live: `escalation.created`, `ticket.updated`, `message.created`, `sla.breach`. |
-
-## Admin — knowledge base
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` `POST` | `/api/v1/admin/kb/documents` | List / create. Create triggers chunk + embed. |
-| `GET` `PUT` `DELETE` | `/api/v1/admin/kb/documents/{id}` | Update bumps `version` and re-embeds. |
-| `POST` | `/api/v1/admin/kb/search` | Debug endpoint: returns dense, sparse, fused and reranked results side by side with scores. Invaluable while tuning, and a good demo screen. |
-| `GET` | `/api/v1/admin/kb/gaps` | Tickets escalated with `knowledge_gap`, grouped by cluster — the KB backlog. |
+| `GET` | `/api/admin/tickets` | Filterable, paginated ticket list. |
+| `GET` | `/api/admin/tickets/{ticket_id}` | Ticket detail with transcript and timeline. |
+| `GET` | `/api/admin/tickets/{ticket_id}/runs` | `agent_runs` with their `agent_steps`/`tool_calls` — the "why did it do that" view, powers the admin dashboard's reasoning-trace panel. |
 
 ## Admin — metrics
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/api/v1/admin/metrics/overview` | Open/closed counts, AI resolution rate, escalation rate, avg first response, avg resolution time, CSAT. `?range=7d`. |
-| `GET` | `/api/v1/admin/metrics/channels` | Volume, resolution rate and latency per channel. |
-| `GET` | `/api/v1/admin/metrics/intents` | Volume and escalation rate per intent — shows where the AI is weak. |
-| `GET` | `/api/v1/admin/metrics/escalations` | Breakdown by `reason_code` over time. |
-| `GET` | `/api/v1/admin/metrics/cost` | Tokens and estimated cost per ticket, per model, per day. |
-| `GET` | `/api/v1/admin/metrics/timeseries` | Daily series for the dashboard charts. |
+| `GET` | `/api/admin/metrics/overview?range=7` | Total/open/closed tickets, AI resolution rate, escalation rate, avg first response and resolution time, total estimated LLM cost. |
+| `GET` | `/api/admin/metrics/channels?range=7` | AI-resolved vs. escalated volume per channel. |
+| `GET` | `/api/admin/metrics/intents?range=7` | Ticket volume per classified intent. |
+| `GET` | `/api/admin/metrics/escalations?range=7` | Escalation count grouped by `reason_code`. |
 
-Thresholds and policy limits are read from `policy/thresholds.py` and changed by
-editing that file and restarting — no live-editable config endpoint. The threshold
-sweep in the eval harness makes the tuning point better than an admin screen would.
+Powers the Recharts dashboard at `/admin/metrics` in the frontend. These are
+live traffic numbers, not the evaluation harness — see
+`docs/08-evaluation.md`'s "Live metrics are not evaluation".
 
-## Auth
+## Admin — knowledge base
 
-| Method | Path |
-|---|---|
-| `POST` | `/api/v1/auth/login` -> `{access_token, refresh_token}` |
-| `POST` | `/api/v1/auth/refresh` |
-| `GET` | `/api/v1/auth/me` |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/admin/kb/documents` | any role | List, with active/inactive status. |
+| `GET` | `/api/admin/kb/documents/{doc_id}` | any role | Full document body. |
+| `POST` | `/api/admin/kb/documents` | `admin` | Create; chunks and embeds immediately. |
+| `PUT` | `/api/admin/kb/documents/{doc_id}` | `admin` | Update; bumps `version` and re-embeds only if the body actually changed. |
+| `POST` | `/api/kb/search` | none | Debug endpoint — dense, sparse and RRF-fused results side by side with scores, plus whether the real retrieval gate would return nothing for this query. Not admin-scoped; built for tuning `RETRIEVAL_SCORE_MIN` (see `docs/decisions/0004-retrieval-score-threshold.md`), useful as a demo screen too. |
 
-Roles: `agent` (queue and tickets) and `admin` (adds KB editing). Two roles, not
-three — a supervisor tier has nothing distinct to do in a prototype.
+## Escalation console
+
+All routes require a bearer token; prefix `/api/console`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/queue` | Queued escalations, priority-ordered. |
+| `GET` | `/escalations/{escalation_id}` | Handoff packet: summary, timeline, verified entities, suggested reply. |
+| `GET` | `/escalations/{escalation_id}/transcript` | Full conversation transcript. |
+| `POST` | `/escalations/{escalation_id}/claim` | Atomic claim (`FOR UPDATE SKIP LOCKED`). |
+| `POST` | `/escalations/{escalation_id}/reply` | Human's reply, delivered through the ticket's own channel adapter. |
+| `POST` | `/escalations/{escalation_id}/return-to-ai` | `{note}` — resumes the LangGraph checkpoint (`Command(resume=...)`) with the human's note fed into the next AI turn. |
+| `POST` | `/escalations/{escalation_id}/resolve` | Marks the escalation resolved. |
+| `GET` | `/stats` | Console-level counters (queue depth, claimed-by-me, etc.) for the console UI. |
+
+No live WebSocket push for the console — it polls via TanStack Query, which
+was enough at this scale and one fewer moving part than a second
+long-lived connection type alongside the customer-facing web chat WS.
 
 ## Conventions
 
 - Errors: FastAPI's default `{"detail": ...}`. RFC 7807 problem details buy
-  nothing when one developer writes both ends.
-- Pagination: `?limit=&offset=`. Cursor pagination is not needed at this size.
-- Every response carries `X-Request-ID`, echoed into logs and `agent_runs`.
-- Path prefix `/api/v1` is kept for tidiness, not because a v2 is planned.
+  nothing when one developer writes both ends — explicit prototype scope,
+  see `docs/decisions/0003-prototype-scope.md`.
+- Pagination: `?limit=&offset=` where it exists. Cursor pagination is not
+  needed at this size.
+- Model ids used for a given response are visible via `agent_runs`/
+  `agent_steps`, not echoed on every response — see `app/llm/registry.py`.

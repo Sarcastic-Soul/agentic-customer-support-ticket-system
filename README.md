@@ -26,7 +26,7 @@ Not "an LLM with a chat window". The system:
 
 ## Architecture in one paragraph
 
-Channel adapters (web chat, WhatsApp, email, later voice) contain no LLM; they
+Channel adapters (web chat, WhatsApp, email, voice) contain no LLM; they
 normalize provider payloads into one canonical `InboundMessage` and render
 replies back. An ingress gateway dedupes and persists, acknowledges the webhook,
 then enqueues the work. A worker runs a single channel-agnostic LangGraph state
@@ -132,6 +132,9 @@ flowchart TB
 | [`docs/07-build-stages.md`](docs/07-build-stages.md) | 12-week plan, definitions of done, demo scripts, cut list |
 | [`docs/08-evaluation.md`](docs/08-evaluation.md) | Golden dataset, metrics, judging, ablations |
 | [`docs/09-risks.md`](docs/09-risks.md) | Failure modes and mitigations |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What was actually built, stage by stage, including every bug found and how |
+| [`docs/REPORT.md`](docs/REPORT.md) | The final writeup — architecture, decisions, results, limitations |
+| [`docs/decisions/`](docs/decisions/) | One short file per non-obvious choice, with the reasoning behind it |
 
 ## Stack
 
@@ -266,23 +269,37 @@ reads as a trade-off rather than an oversight.
 
 ## Project status
 
-Stages 0-11 built and tested; Stage 12 (hardening, demo, writeup) in
-progress. See [`docs/07-build-stages.md`](docs/07-build-stages.md) for the
-stage checklists and [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is
-actually built, stage by stage, including real bugs found and fixed along
-the way — including several found live, not in a unit test: a
-`MissingGreenlet` on an `onupdate`-expired column (Stage 9), a stale
-editable install silently breaking `pytest` after a dependency change
-(Stage 10), and PII redaction (`messages.body_redacted`) turning out to be
-schema-only with no actual redaction path anywhere until Stage 12's PII
-check caught it.
+All 12 stages are built and tested. See
+[`docs/07-build-stages.md`](docs/07-build-stages.md) for the stage
+checklists, [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is actually
+built stage by stage, and [`docs/REPORT.md`](docs/REPORT.md) for the full
+writeup. A recurring theme worth knowing about going in: several real bugs
+in this project were found live — through a real browser, a real running
+server, or a real eval run — not by a unit test, because the bug only
+existed in exactly that gap. Examples: a `MissingGreenlet` on an
+`onupdate`-expired column (Stage 9); a stale editable install silently
+breaking `pytest` after a dependency change (Stage 10); PII redaction
+(`messages.body_redacted`) turning out to be schema-only, with no actual
+redaction path anywhere, until Stage 12's PII check caught it; and an LLM
+judge that was grading the evaluation harness's own replies blind, inflating
+its headline hallucination metric on facts nothing had actually invented
+(Stage 11/12 — see `docs/REPORT.md` §6).
 
-**Stage 6 is the milestone**: a complete vertical slice with escalation and
-the human console. Stage 11 (the evaluation harness, `eval/run_eval.py`,
-50 hand-labelled cases) is the other one — it's what turns "the AI resolves
-customer issues" from a claim into a measurable result. A full run across
-every ablation is one `make eval --all-ablations --sweep-confidence` away
-once there's LLM quota headroom to spend on it; see `docs/PROGRESS.md`
-Stage 11 for why it wasn't run to completion during development (both
-`gemini-3.8-flash`'s 20-requests/day free tier and a live API slowdown, not
-a harness limitation).
+**Two milestones.** Stage 6 is a complete vertical slice with escalation and
+the human console. Stage 11 — the evaluation harness, `eval/run_eval.py`,
+50 hand-labelled cases across six categories including adversarial and
+knowledge-gap ones — is the other: it is what turns "the AI resolves
+customer issues" from a claim into a measurable result. The harness itself
+is finished and live-debugged (four real bugs found and fixed by actually
+running it); a full run across every ablation is one command away —
+
+```bash
+make eval ARGS="--all-ablations --sweep-confidence"
+```
+
+— once there is daily LLM quota headroom left to spend on it. Getting the
+harness correct used up Gemini's two free tiers and Groq's `gpt-oss-120b`
+daily token budget for the day it was built; see `docs/PROGRESS.md` Stage 11
+and `docs/REPORT.md` §6 for the full account, including the fixes that came
+out of it (a proactive per-model rate limiter now paces every LLM call
+against its real requests-per-minute ceiling, `app/llm/registry.py`).
