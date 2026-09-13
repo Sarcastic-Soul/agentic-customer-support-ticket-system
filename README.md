@@ -1,83 +1,70 @@
 # Agentic AI Customer Support System
 
+![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-arq-DC382D?logo=redis&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Status](https://img.shields.io/badge/status-prototype%2C%20all%20stages%20built-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
 An AI support system that reads a customer's problem on any channel, tries to
-actually solve it using the company's real order, payment and knowledge data,
-and — when it cannot or should not — hands the ticket to a human with a full
-context packet instead of a shrug.
+resolve it against real order/payment/knowledge data, and hands off to a
+human with full context when it can't or shouldn't. Runs entirely on a
+laptop, no paid services required.
 
-Runs entirely on a laptop. No paid services.
+## What it does
 
-## What makes it "agentic"
+- **Plans** — classifies intent, picks a tool group, decides whether to retrieve knowledge or query business data
+- **Acts** — calls typed tools against real order/shipment/transaction data, in a bounded loop
+- **Verifies** — checks its own draft for groundedness, policy safety and completeness before it reaches a customer
+- **Knows its limits** — refuses beyond authorization ceilings, escalates on low confidence / knowledge gaps / policy limits
+- **Hands off well** — summary, timeline, verified entities, suggested reply, full context packet for the human agent
+- **Resumes** — a human can return a ticket to the AI with a note; it continues from its checkpoint
 
-Not "an LLM with a chat window". The system:
+## Architecture
 
-- **Plans** — classifies intent, picks a tool group, decides whether it needs to
-  retrieve knowledge or query the business database.
-- **Acts** — calls typed tools against real order, shipment and transaction data,
-  in a bounded loop, recovering from tool errors.
-- **Verifies** — checks its own draft for groundedness, policy safety and
-  completeness before anything reaches a customer.
-- **Knows its limits** — refuses to act beyond authorization ceilings, escalates
-  on low confidence, knowledge gaps, policy limits, abuse or legal risk.
-- **Hands off well** — produces a summary, a timeline, the entities it verified,
-  what it could not do, and a suggested reply and action.
-- **Resumes** — the human can return the ticket to the AI with a note, and the
-  agent continues from its checkpointed state.
-
-## Architecture in one paragraph
-
-Channel adapters (web chat, WhatsApp, email, voice) contain no LLM; they
-normalize provider payloads into one canonical `InboundMessage` and render
-replies back. An ingress gateway dedupes and persists, acknowledges the webhook,
-then enqueues the work. A worker runs a single channel-agnostic LangGraph state
-machine: prepare, classify, hard-route, plan, retrieve (hybrid RAG over
-pgvector + Postgres full-text), act (bounded tool loop behind a policy layer),
-verify, then respond or escalate. Escalation pauses the graph at a checkpoint,
-writes a handoff packet to a priority queue, and a human agent picks it up in a
-console — replying through the same channel the customer used, or handing control
-back to the AI. Everything is one PostgreSQL database, and every run, step and tool call is
-recorded for the dashboard and the evaluation harness.
-
-Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
+Channel adapters (web, WhatsApp, email, voice) carry **no LLM logic** — they normalize provider payloads to one `InboundMessage`/`OutboundMessage` pair. One channel-agnostic LangGraph state machine does all reasoning. Full detail: [`docs/01-architecture.md`](docs/01-architecture.md).
 
 ```mermaid
 flowchart TB
     subgraph CH["1. Channel adapters (no LLM)"]
-        W["Web chat widget<br/>(WebSocket)"]
-        WA["WhatsApp<br/>(Twilio webhook)"]
-        EM["Email<br/>(IMAP poll / SMTP send)"]
-        VO["Voice notes<br/>(web-recorded, STT via Groq Whisper)"]
+        W["Web chat<br/>(WebSocket)"]
+        WA["WhatsApp<br/>(Twilio)"]
+        EM["Email<br/>(IMAP/SMTP)"]
+        VO["Voice notes<br/>(STT via Groq Whisper)"]
     end
 
     subgraph GW["2. Ingress gateway"]
-        NORM["Normalize to InboundMessage"]
-        DEDUP["Idempotency + dedupe"]
+        NORM["Normalize"]
+        DEDUP["Dedupe"]
         RAW["Persist raw event"]
     end
 
-    subgraph CORE["3. Conversation core (deterministic)"]
-        IDENT["Identity resolution<br/>(channel,external_id) to customer"]
+    subgraph CORE["3. Conversation core"]
+        IDENT["Identity resolution"]
         THREAD["Thread continuity"]
         TSM["Ticket state machine"]
     end
 
     subgraph ORCH["4. Orchestrator - LangGraph"]
-        CLS["Classify intent + urgency"]
+        CLS["Classify"]
         RET["Retrieve (hybrid RAG)"]
         ACT["Tool loop"]
-        VER["Verify / groundedness gate"]
+        VER["Verify"]
         DEC["Resolve or escalate"]
     end
 
-    subgraph TOOLS["5. Tool layer (typed, policy-checked)"]
-        KB["Knowledge tools"]
-        ORD["Order tools"]
-        TXN["Transaction tools"]
-        TKT["Ticket tools"]
+    subgraph TOOLS["5. Tool layer"]
+        KB["Knowledge"]
+        ORD["Orders"]
+        TXN["Transactions"]
+        TKT["Tickets"]
     end
 
     subgraph POL["6. Policy + guardrails"]
-        AUTH["Action authorization<br/>(refund ceilings, windows)"]
+        AUTH["Authorization ceilings"]
         PII["PII redaction"]
         CONF["Confidence gate"]
     end
@@ -90,7 +77,7 @@ flowchart TB
 
     subgraph DATA["8. Storage"]
         PG[("PostgreSQL 18 + pgvector")]
-        RD[("Redis - queue, locks, pubsub")]
+        RD[("Redis")]
     end
 
     subgraph OBS["9. Observability"]
@@ -118,40 +105,22 @@ flowchart TB
     TR --> MET
 ```
 
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [`docs/00-plan-review.md`](docs/00-plan-review.md) | What was wrong with the first draft design and why the current one differs |
-| [`docs/01-architecture.md`](docs/01-architecture.md) | Layers, diagrams, request and escalation lifecycles, process topology |
-| [`docs/02-tech-stack.md`](docs/02-tech-stack.md) | Every dependency and the reason for it; repository layout |
-| [`docs/03-data-model.md`](docs/03-data-model.md) | Full schema with SQL, state machine, seed data plan |
-| [`docs/04-agent-design.md`](docs/04-agent-design.md) | Graph state, node by node, tool catalog, prompting, failure handling |
-| [`docs/05-escalation-policy.md`](docs/05-escalation-policy.md) | Trigger table, authorization matrix, handoff packet, resume mechanics |
-| [`docs/06-api-spec.md`](docs/06-api-spec.md) | REST and WebSocket surface |
-| [`docs/07-build-stages.md`](docs/07-build-stages.md) | 12-week plan, definitions of done, demo scripts, cut list |
-| [`docs/08-evaluation.md`](docs/08-evaluation.md) | Golden dataset, metrics, judging, ablations |
-| [`docs/09-risks.md`](docs/09-risks.md) | Failure modes and mitigations |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What was actually built, stage by stage, including every bug found and how |
-| [`docs/REPORT.md`](docs/REPORT.md) | The final writeup — architecture, decisions, results, limitations |
-| [`docs/decisions/`](docs/decisions/) | One short file per non-obvious choice, with the reasoning behind it |
-
 ## Stack
 
-Python 3.13 · FastAPI 0.141 · LangGraph 1.2 · PostgreSQL 18 + pgvector 0.8.6 ·
-Redis + arq · SQLAlchemy 2.0 + Alembic · Vite + React 19 + TanStack Router/Query
-+ Tailwind · `gemini-3.8-flash` primary with Groq `openai/gpt-oss-120b`
-fallback · local `bge-small-en-v1.5` embeddings via fastembed ·
-Twilio WhatsApp sandbox · Gmail IMAP/SMTP · Recharts for the metrics dashboard ·
-voice notes transcribed via Groq's hosted `whisper-large-v3`
-(`docs/decisions/0005-voice-stt-groq-fallback.md` explains why not a local
-model, given this build machine's measured RAM/GPU constraints).
+| Layer | Choice |
+|---|---|
+| Backend | Python 3.13, FastAPI, async SQLAlchemy 2.0 + Alembic (asyncpg) |
+| Agent orchestration | LangGraph, checkpointed via `langgraph-checkpoint-postgres` (psycopg 3) |
+| LLM — primary | Gemini `gemini-3.5-flash-lite` (classify / reason / verify / summarize) |
+| LLM — fallback | Groq `openai/gpt-oss-20b` / `openai/gpt-oss-120b` |
+| LLM — eval judge | Groq `openai/gpt-oss-120b` (deliberately a different provider than the system under test) |
+| Embeddings | Local `bge-small-en-v1.5` via fastembed, no key needed |
+| Database | PostgreSQL 18 + pgvector 0.8.6 (hybrid vector + full-text retrieval) |
+| Queue / jobs | Redis + `arq` worker + scheduler |
+| Frontend | Vite + React 19 + TanStack Router/Query + Tailwind |
+| Channels | Web (WebSocket), WhatsApp (Twilio sandbox), Email (Gmail IMAP/SMTP), Voice (Groq Whisper STT) |
 
-Versions verified 8 September 2026. Notably **not** used: `gemini-2.5-*`
-(a generation behind, and `gemini-2.0-flash` is shut down), Groq
-`llama-3.3-70b-versatile` (deprecated 16 Aug 2026), and Next.js — the backend is
-FastAPI, so a Node server that only renders a shell is dead weight. Reasoning in
-[`docs/02-tech-stack.md`](docs/02-tech-stack.md).
+Model ids live only in `.env`, read through `app/llm/registry.py` — see [`docs/02-tech-stack.md`](docs/02-tech-stack.md) for the full reasoning.
 
 ## Quick start
 
@@ -160,146 +129,65 @@ cp .env.example .env          # add GEMINI_API_KEY and/or GROQ_API_KEY
 make up                       # postgres + redis
 make migrate                  # alembic upgrade head
 make seed                     # synthetic customers, orders, transactions, KB
-make dev                      # api + worker + scheduler + frontend
+make dev                      # api + worker + frontend
 ```
 
-Or, to reproduce the Stage 6 demo script end to end in one command (resets the
-database, seeds and ingests fresh, starts everything, and runs the automated
-half of the scenario against the running stack):
+One-command scripted demo (reset, seed, ingest, run the demo scenario):
 
 ```bash
 make demo
 ```
 
-- Customer web chat: http://localhost:5173/chat
-- Agent console (sign in, any seeded agent, password `dev-password`):
-  http://localhost:5173/login
-- Admin dashboard (tickets, reasoning trace, metrics, knowledge base — admin
-  role only for writes): http://localhost:5173/admin
-- API docs: http://localhost:8000/docs
+| URL | What |
+|---|---|
+| http://localhost:5173/chat | Customer web chat (email login, past tickets) |
+| http://localhost:5173/login | Agent console / admin login (any seeded agent, password `dev-password`) |
+| http://localhost:5173/console | Escalation queue + human handoff |
+| http://localhost:5173/admin | Tickets, reasoning trace, metrics, knowledge base |
+| http://localhost:8000/docs | API docs |
 
-No API key? Set `LLM_PROVIDER=stub` for a deterministic fake model — the whole
-pipeline runs offline for tests, for developing the UI, and for the Stage 12
-concurrency check.
+Set `LLM_PROVIDER=stub` for a deterministic offline fake model — no API key needed, used for UI work and tests.
 
-## Trying voice for real
+## Enabling real channels
 
-The web chat widget has a microphone button (`useVoiceRecorder`,
-`app/channels/voice.py`) that records a short clip, uploads it to
-`POST /channels/voice/upload`, transcribes it via Groq's hosted Whisper, and
-runs the transcript through the exact same pipeline every other channel
-uses — the orchestrator needed zero changes for voice (see
-`docs/PROGRESS.md` Stage 10). WhatsApp voice notes are transcribed the same
-way, automatically, no setup needed beyond `GROQ_API_KEY`.
+All channels are simulator-testable with zero setup (`POST /dev/simulate/*`). Going through a real provider needs a bit more:
 
-To try the web widget's recording button:
-
-1. Set `VOICE_ENABLED=true` in `.env` (default `false`, same opt-in pattern
-   as email) and make sure `GROQ_API_KEY` is set.
-2. Open http://localhost:5173/chat, allow microphone access, and hold the
-   🎤 button to record a question like "what's the status of my order".
-3. The transcript appears as your message; the reply comes back short and
-   plain (no markdown, no links) via `ResponseStyle`, same as WhatsApp.
-
-## Trying WhatsApp for real
-
-The WhatsApp adapter, webhook, signature verification, and delivery-status
-tracking are all built and covered by tests using a real (but offline) Twilio
-signature check — see `backend/tests/test_whatsapp.py`. Every code path is
-also exercised without Twilio at all via `POST /dev/simulate/whatsapp`
-(same shape as `/dev/simulate/web`).
-
-Proving it against an actual phone needs a few manual steps that only make
-sense with you actively driving your phone, so they're not automated:
-
-1. Create a free [Twilio](https://www.twilio.com/try-twilio) account, open the
-   [WhatsApp Sandbox](https://console.twilio.com/us1/develop/sms/try-it-out/whatsapp-learn),
-   and note the sandbox number and join code.
-2. From your phone, WhatsApp the join code to the sandbox number.
-3. Put your Account SID and Auth Token into `.env`
-   (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`).
-4. Start a public tunnel to this machine, e.g. `cloudflared tunnel --url
-   http://localhost:8000`, and put the resulting URL into `.env` as
-   `PUBLIC_BASE_URL` (no trailing slash) — this is also what
-   `X-Twilio-Signature` verification checks the request against, so it must
-   match exactly.
-5. In the Twilio console, set the sandbox's "when a message comes in" webhook
-   to `<PUBLIC_BASE_URL>/channels/whatsapp/webhook` and the status callback
-   to `<PUBLIC_BASE_URL>/channels/whatsapp/status`.
-6. Message the sandbox number from your phone. `make dev`'s worker log shows
-   the run; the reply arrives back on WhatsApp.
-
-Twilio's trial credit is small (~100 WhatsApp messages) - budget it for this
-test and for a demo, not for development, which the simulator already covers.
-
-## Trying email for real
-
-Same story as WhatsApp: the IMAP poller (an arq cron job, `app/workers/
-email_poll.py`), MIME/quoted-text parsing, Message-ID/References threading,
-loop protection (ignores mailing lists and auto-replies), and SMTP send are
-all built and unit-tested (`backend/tests/test_email_parsing.py`,
-`test_email_adapter.py`) without needing a mailbox. `POST
-/dev/simulate/email` exercises the same ingest path the real poller does.
-
-To try it against a real inbox:
-
-1. Create a dedicated, throwaway Gmail address - never a personal one.
-2. Turn on 2-Step Verification, then create an
-   [App Password](https://myaccount.google.com/apppasswords).
-3. In `.env`, set `EMAIL_ENABLED=true`, `SUPPORT_EMAIL` to the address, and
-   `SUPPORT_EMAIL_APP_PASSWORD` to the app password.
-4. `make dev` - the cron job polls every 30s. Email the address and watch
-   the worker log; the reply arrives in the same thread.
-
-No tunnel needed here - IMAP polling reaches out, nothing needs to reach in.
+| Channel | Enable | Extra setup |
+|---|---|---|
+| Web chat | on by default | none |
+| Voice notes | `VOICE_ENABLED=true` + `GROQ_API_KEY` | mic permission in browser |
+| WhatsApp | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` in `.env` | free Twilio sandbox + a public tunnel (e.g. `cloudflared`) pointed at `/channels/whatsapp/webhook` |
+| Email | `EMAIL_ENABLED=true`, `SUPPORT_EMAIL`, `SUPPORT_EMAIL_APP_PASSWORD` | dedicated Gmail address + app password (2FA required), polled every 30s, no tunnel needed |
 
 ## Scope
 
-**This is a prototype: stop polishing early, do not skip structure.** Rare
-edge-case bugs are acceptable and not worth chasing — a stray email signature in a
-transcript, a race needing three simultaneous messages, rough unstyled UI. The
-queue, the migrations, the dedupe constraint, the audit and trace tables, the
-escalation loop and the evaluation harness all stay, because each either *is* the
-project or prevents a failure that ruins a demo.
+Prototype: infrastructure that prevents a class of bug is kept; polish that doesn't affect correctness is skipped. Full reasoning: [`docs/decisions/0003-prototype-scope.md`](docs/decisions/0003-prototype-scope.md).
 
-What is genuinely out of scope — skill-based assignment routing, SLA cron,
-reranking, a trace UI, CI, mypy, real load testing — is listed in
-[`docs/07-build-stages.md`](docs/07-build-stages.md#deliberately-not-doing) so it
-reads as a trade-off rather than an oversight.
+| Kept (non-negotiable) | Skipped (deliberately) |
+|---|---|
+| `arq` worker + scheduler, Alembic migrations | Skill-based routing algorithm (column exists, no logic) |
+| `raw_events`, `refunds`, `shipments`, `agent_steps`, `tool_calls` as real tables | SLA breach cron |
+| PII redaction into `messages.body_redacted` | Reranking |
+| Escalation loop, handoff packet, `verify` node | Trace UI, CI, mypy, coverage gates |
+| ~40 tests on critical paths (ticket transitions, dedupe, identity, `authorize()`, tool scoping, PII, retrieval) | Real load testing, RFC-7807 errors, cursor pagination |
 
-## Project status
+## Documentation
 
-All 12 stages are built and tested. See
-[`docs/07-build-stages.md`](docs/07-build-stages.md) for the stage
-checklists, [`docs/PROGRESS.md`](docs/PROGRESS.md) for what is actually
-built stage by stage, and [`docs/REPORT.md`](docs/REPORT.md) for the full
-writeup. A recurring theme worth knowing about going in: several real bugs
-in this project were found live — through a real browser, a real running
-server, or a real eval run — not by a unit test, because the bug only
-existed in exactly that gap. Examples: a `MissingGreenlet` on an
-`onupdate`-expired column (Stage 9); a stale editable install silently
-breaking `pytest` after a dependency change (Stage 10); PII redaction
-(`messages.body_redacted`) turning out to be schema-only, with no actual
-redaction path anywhere, until Stage 12's PII check caught it; and an LLM
-judge that was grading the evaluation harness's own replies blind, inflating
-its headline hallucination metric on facts nothing had actually invented
-(Stage 11/12 — see `docs/REPORT.md` §6).
+| Document | Contents |
+|---|---|
+| [`docs/01-architecture.md`](docs/01-architecture.md) | Layers, diagrams, request/escalation lifecycles |
+| [`docs/02-tech-stack.md`](docs/02-tech-stack.md) | Every dependency and why, repo layout |
+| [`docs/03-data-model.md`](docs/03-data-model.md) | Full schema, state machine, seed data |
+| [`docs/04-agent-design.md`](docs/04-agent-design.md) | Graph state, nodes, tool catalog, prompting |
+| [`docs/05-escalation-policy.md`](docs/05-escalation-policy.md) | Trigger table, authorization matrix, handoff packet |
+| [`docs/06-api-spec.md`](docs/06-api-spec.md) | REST and WebSocket surface |
+| [`docs/07-build-stages.md`](docs/07-build-stages.md) | Build plan, definitions of done, cut list |
+| [`docs/08-evaluation.md`](docs/08-evaluation.md) | Golden dataset, metrics, judging, ablations |
+| [`docs/09-risks.md`](docs/09-risks.md) | Failure modes and mitigations |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Build log, stage by stage |
+| [`docs/REPORT.md`](docs/REPORT.md) | Final writeup |
+| [`docs/decisions/`](docs/decisions/) | One file per non-obvious decision |
 
-**Two milestones.** Stage 6 is a complete vertical slice with escalation and
-the human console. Stage 11 — the evaluation harness, `eval/run_eval.py`,
-50 hand-labelled cases across six categories including adversarial and
-knowledge-gap ones — is the other: it is what turns "the AI resolves
-customer issues" from a claim into a measurable result. The harness itself
-is finished and live-debugged (four real bugs found and fixed by actually
-running it); a full run across every ablation is one command away —
+## License
 
-```bash
-make eval ARGS="--all-ablations --sweep-confidence"
-```
-
-— once there is daily LLM quota headroom left to spend on it. Getting the
-harness correct used up Gemini's two free tiers and Groq's `gpt-oss-120b`
-daily token budget for the day it was built; see `docs/PROGRESS.md` Stage 11
-and `docs/REPORT.md` §6 for the full account, including the fixes that came
-out of it (a proactive per-model rate limiter now paces every LLM call
-against its real requests-per-minute ceiling, `app/llm/registry.py`).
+[MIT](LICENSE)
