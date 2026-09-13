@@ -27,5 +27,15 @@ services:
       timeout: 5s
       retries: 10
 
+  pgweb:
+    image: sosedoff/pgweb
+    restart: unless-stopped
+    environment:
+      PGWEB_DATABASE_URL: postgres://support:support@postgres:5432/support?sslmode=disable
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+
 volumes:
   pgdata:
