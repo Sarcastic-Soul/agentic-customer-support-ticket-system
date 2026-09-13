@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { consoleApi } from "../lib/console-api";
-import { isAuthed } from "../lib/auth";
+import { clearSession, getAgent, isAuthed } from "../lib/auth";
 
 type ConsoleSearch = { escalation?: number };
 
@@ -25,60 +25,127 @@ const PRIORITY_COLOR: Record<string, string> = {
   P4: "bg-neutral-100 text-neutral-600",
 };
 
+type QueueTab = "queue" | "mine";
+
 function ConsolePage() {
   const { escalation: selectedId } = Route.useSearch();
   const navigate = useNavigate({ from: "/console" });
+  const navigateTop = useNavigate();
+  const [tab, setTab] = useState<QueueTab>("queue");
+  const agent = getAgent();
 
   const queueQuery = useQuery({
-    queryKey: ["console", "queue"],
-    queryFn: () => consoleApi.queue(),
+    queryKey: ["console", "queue", tab],
+    queryFn: () => consoleApi.queue(tab === "mine" ? { mine: true } : undefined),
     refetchInterval: 5000,
   });
 
+  function handleLogout() {
+    clearSession();
+    navigateTop({ to: "/login" });
+  }
+
   return (
-    <div className="flex h-dvh bg-neutral-50 text-neutral-900">
-      <aside className="w-80 flex-shrink-0 overflow-y-auto border-r border-neutral-200 bg-white">
-        <div className="border-b border-neutral-200 px-4 py-3">
-          <div className="flex items-center justify-between">
-            <h1 className="text-sm font-semibold">Escalation Queue</h1>
-            <Link to="/admin/tickets" className="text-xs text-sky-700 hover:underline">
-              Dashboard
+    <div className="flex h-dvh flex-col bg-neutral-50 text-neutral-900">
+      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3">
+        <div className="flex items-center gap-6">
+          <span className="text-sm font-semibold">Admin Dashboard</span>
+          <nav className="flex gap-1">
+            <Link
+              to="/admin/tickets"
+              className="rounded-md px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100"
+            >
+              Tickets
             </Link>
-          </div>
-          <p className="text-xs text-neutral-500">{queueQuery.data?.length ?? 0} waiting</p>
+            <Link
+              to="/admin/metrics"
+              className="rounded-md px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100"
+            >
+              Metrics
+            </Link>
+            <Link
+              to="/admin/kb"
+              className="rounded-md px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100"
+            >
+              Knowledge Base
+            </Link>
+            <span className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white">
+              Escalation Console
+            </span>
+          </nav>
         </div>
-        <ul>
-          {queueQuery.data?.map((esc) => (
-            <li key={esc.id}>
+        <div className="flex items-center gap-3 text-sm text-neutral-500">
+          {agent && (
+            <span>
+              {agent.full_name} <span className="text-neutral-400">· {agent.role}</span>
+            </span>
+          )}
+          <button onClick={handleLogout} className="text-neutral-400 hover:text-neutral-700">
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        <aside className="w-80 flex-shrink-0 overflow-y-auto border-r border-neutral-200 bg-white">
+          <div className="border-b border-neutral-200 px-4 py-3">
+            <div className="flex gap-1">
               <button
-                onClick={() => navigate({ search: { escalation: esc.id } })}
-                className={`block w-full border-b border-neutral-100 px-4 py-3 text-left text-sm hover:bg-neutral-50 ${
-                  selectedId === esc.id ? "bg-neutral-100" : ""
+                onClick={() => setTab("queue")}
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  tab === "queue" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600"
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{esc.ticket_reference}</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                      PRIORITY_COLOR[esc.priority] ?? "bg-neutral-100"
-                    }`}
-                  >
-                    {esc.priority}
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-neutral-500">{esc.reason_code}</div>
+                Queue
               </button>
-            </li>
-          ))}
-          {queueQuery.data?.length === 0 && (
-            <li className="px-4 py-8 text-center text-sm text-neutral-400">Queue is empty</li>
-          )}
-        </ul>
-      </aside>
+              <button
+                onClick={() => setTab("mine")}
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  tab === "mine" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600"
+                }`}
+              >
+                Claimed by me
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">
+              {queueQuery.data?.length ?? 0} {tab === "mine" ? "claimed" : "waiting"}
+            </p>
+          </div>
+          <ul>
+            {queueQuery.data?.map((esc) => (
+              <li key={esc.id}>
+                <button
+                  onClick={() => navigate({ search: { escalation: esc.id } })}
+                  className={`block w-full border-b border-neutral-100 px-4 py-3 text-left text-sm hover:bg-neutral-50 ${
+                    selectedId === esc.id ? "bg-neutral-100" : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{esc.ticket_reference}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        PRIORITY_COLOR[esc.priority] ?? "bg-neutral-100"
+                      }`}
+                    >
+                      {esc.priority}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-neutral-500">{esc.reason_code}</div>
+                </button>
+              </li>
+            ))}
+            {queueQuery.data?.length === 0 && (
+              <li className="px-4 py-8 text-center text-sm text-neutral-400">
+                {tab === "mine" ? "You haven't claimed anything." : "Queue is empty"}
+              </li>
+            )}
+          </ul>
+        </aside>
 
-      <main className="flex-1 overflow-y-auto">
-        {selectedId ? <WorkView escalationId={selectedId} /> : <EmptyState />}
-      </main>
+        <main className="flex-1 overflow-y-auto">
+          {selectedId ? <WorkView escalationId={selectedId} /> : <EmptyState />}
+        </main>
+      </div>
     </div>
   );
 }

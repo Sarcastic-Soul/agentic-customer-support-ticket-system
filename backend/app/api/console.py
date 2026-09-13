@@ -16,7 +16,7 @@ from app.channels.registry import get_adapter
 from app.core.auth import get_current_agent
 from app.core.tickets import transition_ticket
 from app.db.session import get_session
-from app.models import Conversation, Escalation, Message, Ticket
+from app.models import Conversation, Escalation, HumanAgent, Message, Ticket
 
 router = APIRouter(
     prefix="/api/console", tags=["console"], dependencies=[Depends(get_current_agent)]
@@ -78,15 +78,22 @@ async def _load_ticket(session: AsyncSession, ticket_id: int) -> Ticket:
 
 @router.get("/queue", response_model=list[EscalationSummary])
 async def get_queue(
-    skill: str | None = None, session: AsyncSession = Depends(get_session)
+    skill: str | None = None,
+    mine: bool = False,
+    agent: HumanAgent = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_session),
 ) -> list[EscalationSummary]:
-    query = (
-        select(Escalation, Ticket.reference)
-        .join(Ticket, Ticket.id == Escalation.ticket_id)
-        .where(Escalation.status == "queued")
-    )
-    if skill:
-        query = query.where(Escalation.required_skill == skill)
+    """Unclaimed queue by default. `mine=true` instead lists escalations this
+    agent has claimed and not yet resolved/returned - otherwise a claimed
+    ticket has no list it appears on at all (see docs/PROGRESS.md).
+    """
+    query = select(Escalation, Ticket.reference).join(Ticket, Ticket.id == Escalation.ticket_id)
+    if mine:
+        query = query.where(Escalation.claimed_by == agent.id, Escalation.status == "claimed")
+    else:
+        query = query.where(Escalation.status == "queued")
+        if skill:
+            query = query.where(Escalation.required_skill == skill)
     rows = (await session.execute(query)).all()
 
     rows.sort(key=lambda r: (PRIORITY_ORDER.get(r[0].priority, 9), r[0].created_at))
@@ -143,7 +150,9 @@ async def get_transcript(
 
 @router.post("/escalations/{escalation_id}/claim", response_model=ClaimResponse)
 async def claim_escalation(
-    escalation_id: int, session: AsyncSession = Depends(get_session)
+    escalation_id: int,
+    agent: HumanAgent = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_session),
 ) -> ClaimResponse:
     """Atomic claim: FOR UPDATE SKIP LOCKED so two agents can never grab the
     same ticket, then a plain status check to reject an already-claimed one.
@@ -160,6 +169,7 @@ async def claim_escalation(
 
     locked.status = "claimed"
     locked.claimed_at = datetime.now(UTC)
+    locked.claimed_by = agent.id
 
     ticket = await _load_ticket(session, locked.ticket_id)
     await transition_ticket(session, ticket, "human_working", actor_type="human")

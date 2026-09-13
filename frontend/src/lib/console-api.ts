@@ -43,8 +43,13 @@ export type TranscriptMessage = {
 
 
 export const consoleApi = {
-  queue: (skill?: string) =>
-    request<EscalationSummary[]>(`/api/console/queue${skill ? `?skill=${skill}` : ""}`),
+  queue: (opts?: { skill?: string; mine?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.skill) params.set("skill", opts.skill);
+    if (opts?.mine) params.set("mine", "true");
+    const qs = params.toString();
+    return request<EscalationSummary[]>(`/api/console/queue${qs ? `?${qs}` : ""}`);
+  },
 
   detail: (id: number) => request<EscalationDetail>(`/api/console/escalations/${id}`),
 
