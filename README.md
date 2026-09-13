@@ -148,6 +148,17 @@ make demo
 
 Set `LLM_PROVIDER=stub` for a deterministic offline fake model — no API key needed, used for UI work and tests.
 
+### Docker-only (no Python/Node/uv/pnpm installed)
+
+```bash
+cp .env.example .env          # add GEMINI_API_KEY and/or GROQ_API_KEY
+make docker-up                # builds + runs postgres, redis, pgweb, api, worker, frontend
+docker compose exec api python -m app.seed.run     # one-off: synthetic data
+docker compose exec api python -m app.rag.ingest   # one-off: embed the KB
+```
+
+Same URLs as above. `make dev`/`make api`/etc. still run natively as before — the `app` Compose profile is opt-in and doesn't change that path. `docker compose --profile app down` to stop.
+
 ## Enabling real channels
 
 All channels are simulator-testable with zero setup (`POST /dev/simulate/*`). Going through a real provider needs a bit more:

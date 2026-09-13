@@ -37,5 +37,52 @@ services:
     depends_on:
       - postgres
 
+  # ---- everything below is opt-in (`docker compose --profile app up -d`,
+  # or `make docker-up`) - native `make dev` users get only postgres/redis/
+  # pgweb above, exactly as before. This profile is for running the whole
+  # stack with nothing installed but Docker. ----
+
+  api:
+    profiles: [app]
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support:support@postgres:5432/support
+      CHECKPOINT_DATABASE_URL: postgresql://support:support@postgres:5432/support
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    profiles: [app]
+    build: ./backend
+    command: arq app.workers.settings.WorkerSettings
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support:support@postgres:5432/support
+      CHECKPOINT_DATABASE_URL: postgresql://support:support@postgres:5432/support
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    profiles: [app]
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:

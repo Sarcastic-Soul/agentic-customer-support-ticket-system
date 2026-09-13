@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
 
     model_classify: str = "gemini-3.5-flash-lite"
-    model_reason: str = "gemini-3.8-flash"
+    model_reason: str = "gemini-3.5-flash-lite"
     model_verify: str = "gemini-3.5-flash-lite"
-    model_summarize: str = "gemini-3.8-flash"
+    model_summarize: str = "gemini-3.5-flash-lite"
     fallback_model_classify: str = "openai/gpt-oss-20b"
     fallback_model_reason: str = "openai/gpt-oss-120b"
     judge_model: str = "openai/gpt-oss-120b"

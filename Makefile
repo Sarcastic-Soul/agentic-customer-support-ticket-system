@@ -1,4 +1,4 @@
-.PHONY: up down migrate seed ingest dev api worker frontend demo eval test lint
+.PHONY: up down migrate seed ingest dev api worker frontend demo eval test lint docker-up docker-down
 
 BACKEND=cd backend && . .venv/bin/activate &&
 
@@ -61,3 +61,15 @@ test:
 
 lint:
 	$(BACKEND) ruff check app
+
+# Everything containerized - nothing but Docker needed. Builds api/worker/
+# frontend images and runs the whole stack (postgres, redis, pgweb, api,
+# worker, frontend). Migrations + extensions run automatically on boot
+# (backend/docker-entrypoint.sh); seed/ingest are still one-off steps.
+docker-up:
+	docker compose --profile app up -d --build
+	@echo "seed once with:   docker compose exec api python -m app.seed.run"
+	@echo "then ingest with: docker compose exec api python -m app.rag.ingest"
+
+docker-down:
+	docker compose --profile app down
