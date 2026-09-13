@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.console import router as console_router
+from app.api.customer import router as customer_router
 from app.api.dev import router as dev_router
 from app.api.kb import router as kb_router
 from app.config import settings
@@ -34,6 +35,7 @@ app.include_router(web_ws_router)
 app.include_router(whatsapp_router)
 app.include_router(voice_router)
 app.include_router(kb_router)
+app.include_router(customer_router)
 app.include_router(console_router)
 app.include_router(auth_router)
 app.include_router(admin_router)

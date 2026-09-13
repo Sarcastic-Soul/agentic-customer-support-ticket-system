@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type ChatMessage = {
   id: string;
-  role: "customer" | "assistant";
+  role: "customer" | "assistant" | "human_agent";
   text: string;
 };
 
@@ -10,9 +10,13 @@ type ConnectionStatus = "connecting" | "open" | "closed";
 
 /** Owns the WebSocket connection to /channels/web/ws. Reconnects with a
  * short fixed backoff if the connection drops - good enough for a prototype
- * chat widget, not a general-purpose reconnection library. */
-export function useWebChat(sessionId: string) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+ * chat widget, not a general-purpose reconnection library.
+ *
+ * `history` seeds the initial message list (fetched separately over REST,
+ * since the WS itself only forwards new replies going forward, never past
+ * ones) - only read once, on mount, not re-applied on change. */
+export function useWebChat(sessionId: string, history: ChatMessage[] = []) {
+  const [messages, setMessages] = useState<ChatMessage[]>(() => history);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -23,7 +27,7 @@ export function useWebChat(sessionId: string) {
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       socket = new WebSocket(
-        `${protocol}://${window.location.host}/channels/web/ws?session_id=${sessionId}`,
+        `${protocol}://${window.location.host}/channels/web/ws?session_id=${encodeURIComponent(sessionId)}`,
       );
       socketRef.current = socket;
       setStatus("connecting");
