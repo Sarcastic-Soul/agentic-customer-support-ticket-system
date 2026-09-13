@@ -9,7 +9,9 @@ export type TicketSummary = {
   priority: string;
   sentiment: string | null;
   created_at: string;
+  updated_at: string;
   resolved_at: string | null;
+  assigned_agent: string | null;
 };
 
 export type TicketListResponse = { items: TicketSummary[]; total: number };
@@ -122,6 +124,9 @@ export type TicketFilters = {
   channel?: string;
   intent?: string;
   priority?: string;
+  q?: string;
+  sort_by?: "created_at" | "updated_at" | "priority" | "status";
+  sort_dir?: "asc" | "desc";
   limit?: number;
   offset?: number;
 };

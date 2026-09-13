@@ -44,12 +44,22 @@ class TicketSummary(BaseModel):
     priority: str
     sentiment: str | None
     created_at: datetime
+    updated_at: datetime
     resolved_at: datetime | None
+    assigned_agent: str | None
 
 
 class TicketListResponse(BaseModel):
     items: list[TicketSummary]
     total: int
+
+
+_SORTABLE_FIELDS = {
+    "created_at": Ticket.created_at,
+    "updated_at": Ticket.updated_at,
+    "priority": Ticket.priority,
+    "status": Ticket.status,
+}
 
 
 @router.get("/tickets", response_model=TicketListResponse)
@@ -58,10 +68,18 @@ async def list_tickets(
     channel: str | None = None,
     intent: str | None = None,
     priority: str | None = None,
+    q: str | None = Query(None, description="Search by ticket reference, e.g. 'T-1227'"),
+    sort_by: str = Query("created_at"),
+    sort_dir: str = Query("desc"),
     limit: int = Query(50, le=200),
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> TicketListResponse:
+    if sort_by not in _SORTABLE_FIELDS:
+        raise HTTPException(400, f"sort_by must be one of {sorted(_SORTABLE_FIELDS)}")
+    if sort_dir not in ("asc", "desc"):
+        raise HTTPException(400, "sort_dir must be 'asc' or 'desc'")
+
     query = select(Ticket)
     if status_:
         query = query.where(Ticket.status == status_)
@@ -71,22 +89,55 @@ async def list_tickets(
         query = query.where(Ticket.intent == intent)
     if priority:
         query = query.where(Ticket.priority == priority)
+    if q:
+        query = query.where(Ticket.reference.ilike(f"%{q.strip()}%"))
 
     total = (
         await session.execute(select(func.count()).select_from(query.subquery()))
     ).scalar_one()
+
+    order_col = _SORTABLE_FIELDS[sort_by]
+    order_col = order_col.asc() if sort_dir == "asc" else order_col.desc()
     rows = (
-        await session.execute(
-            query.order_by(Ticket.created_at.desc()).limit(limit).offset(offset)
-        )
+        await session.execute(query.order_by(order_col).limit(limit).offset(offset))
     ).scalars().all()
+
+    # "Who has this?" (docs/PROGRESS.md - a claimed ticket used to be
+    # findable nowhere but the escalation console). One batch query for the
+    # latest escalation per visible ticket, one for agent names - a couple
+    # of tickets on screen at a time, not worth per-ticket queries.
+    ticket_ids = [t.id for t in rows]
+    latest_by_ticket: dict[int, Escalation] = {}
+    if ticket_ids:
+        escalations = (
+            await session.execute(
+                select(Escalation)
+                .where(Escalation.ticket_id.in_(ticket_ids), Escalation.claimed_by.is_not(None))
+                .order_by(Escalation.created_at)
+            )
+        ).scalars().all()
+        for e in escalations:
+            latest_by_ticket[e.ticket_id] = e  # last write per ticket_id wins (ascending order)
+
+    agent_ids = {e.claimed_by for e in latest_by_ticket.values() if e.claimed_by is not None}
+    agent_names: dict[int, str] = {}
+    if agent_ids:
+        agents = (
+            await session.execute(select(HumanAgent).where(HumanAgent.id.in_(agent_ids)))
+        ).scalars().all()
+        agent_names = {a.id: a.full_name for a in agents}
 
     return TicketListResponse(
         items=[
             TicketSummary(
                 id=t.id, reference=t.reference, channel=t.channel, intent=t.intent,
                 status=t.status, priority=t.priority, sentiment=t.sentiment,
-                created_at=t.created_at, resolved_at=t.resolved_at,
+                created_at=t.created_at, updated_at=t.updated_at, resolved_at=t.resolved_at,
+                assigned_agent=(
+                    agent_names.get(latest_by_ticket[t.id].claimed_by)
+                    if t.id in latest_by_ticket
+                    else None
+                ),
             )
             for t in rows
         ],
@@ -141,10 +192,24 @@ async def get_ticket(ticket_id: int, session: AsyncSession = Depends(get_session
         )
     ).scalars().all()
 
+    assigned_agent = None
+    latest_claim = (
+        await session.execute(
+            select(Escalation)
+            .where(Escalation.ticket_id == ticket.id, Escalation.claimed_by.is_not(None))
+            .order_by(Escalation.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_claim is not None:
+        agent = await session.get(HumanAgent, latest_claim.claimed_by)
+        assigned_agent = agent.full_name if agent is not None else None
+
     return TicketDetail(
         id=ticket.id, reference=ticket.reference, channel=ticket.channel, intent=ticket.intent,
         status=ticket.status, priority=ticket.priority, sentiment=ticket.sentiment,
-        created_at=ticket.created_at, resolved_at=ticket.resolved_at,
+        created_at=ticket.created_at, updated_at=ticket.updated_at, resolved_at=ticket.resolved_at,
+        assigned_agent=assigned_agent,
         ai_turns=ticket.ai_turns, resolution=ticket.resolution,
         resolution_summary=ticket.resolution_summary, first_response_at=ticket.first_response_at,
         messages=[

@@ -2,11 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { adminApi } from "../lib/admin-api";
 
+type SortBy = "created_at" | "updated_at" | "priority" | "status";
+type SortDir = "asc" | "desc";
+
 type TicketsSearch = {
   status?: string;
   channel?: string;
   intent?: string;
   priority?: string;
+  q?: string;
+  sortBy?: SortBy;
+  sortDir?: SortDir;
   offset?: number;
 };
 
@@ -16,6 +22,9 @@ export const Route = createFileRoute("/admin/tickets")({
     channel: typeof search.channel === "string" ? search.channel : undefined,
     intent: typeof search.intent === "string" ? search.intent : undefined,
     priority: typeof search.priority === "string" ? search.priority : undefined,
+    q: typeof search.q === "string" ? search.q : undefined,
+    sortBy: typeof search.sortBy === "string" ? (search.sortBy as SortBy) : undefined,
+    sortDir: typeof search.sortDir === "string" ? (search.sortDir as SortDir) : undefined,
     offset: typeof search.offset === "number" ? search.offset : undefined,
   }),
   component: TicketsPage,
@@ -25,6 +34,14 @@ const STATUSES = ["new", "ai_working", "escalated", "human_working", "closed"];
 const CHANNELS = ["web", "whatsapp", "email", "voice"];
 const PRIORITIES = ["P1", "P2", "P3", "P4"];
 const PAGE_SIZE = 25;
+
+const SORT_OPTIONS: { value: string; label: string; sortBy: SortBy; sortDir: SortDir }[] = [
+  { value: "created_desc", label: "Newest first (created)", sortBy: "created_at", sortDir: "desc" },
+  { value: "created_asc", label: "Oldest first (created)", sortBy: "created_at", sortDir: "asc" },
+  { value: "updated_desc", label: "Recently updated", sortBy: "updated_at", sortDir: "desc" },
+  { value: "updated_asc", label: "Least recently updated", sortBy: "updated_at", sortDir: "asc" },
+  { value: "priority_asc", label: "Priority (P1 first)", sortBy: "priority", sortDir: "asc" },
+];
 
 const STATUS_COLOR: Record<string, string> = {
   new: "bg-sky-100 text-sky-700",
@@ -38,6 +55,10 @@ function TicketsPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: "/admin/tickets" });
   const offset = search.offset ?? 0;
+  const sortBy = search.sortBy ?? "created_at";
+  const sortDir = search.sortDir ?? "desc";
+  const currentSortValue =
+    SORT_OPTIONS.find((o) => o.sortBy === sortBy && o.sortDir === sortDir)?.value ?? "created_desc";
 
   const query = useQuery({
     queryKey: ["admin", "tickets", search],
@@ -47,6 +68,9 @@ function TicketsPage() {
         channel: search.channel,
         intent: search.intent,
         priority: search.priority,
+        q: search.q,
+        sort_by: sortBy,
+        sort_dir: sortDir,
         limit: PAGE_SIZE,
         offset,
       }),
@@ -59,10 +83,43 @@ function TicketsPage() {
     });
   }
 
+  function setSort(value: string) {
+    const option = SORT_OPTIONS.find((o) => o.value === value);
+    navigate({
+      search: {
+        ...search,
+        sortBy: option?.sortBy,
+        sortDir: option?.sortDir,
+        offset: undefined,
+      },
+    });
+  }
+
   return (
     <div className="flex h-full">
       <div className="flex w-full max-w-3xl flex-shrink-0 flex-col border-r border-neutral-200 bg-white">
         <div className="flex flex-wrap gap-2 border-b border-neutral-200 px-4 py-3">
+          <input
+            type="text"
+            defaultValue={search.q ?? ""}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setFilter("q", (e.target as HTMLInputElement).value);
+            }}
+            onBlur={(e) => setFilter("q", e.target.value)}
+            placeholder="Search reference (T-1227)…"
+            className="w-44 rounded-md border border-neutral-300 px-2 py-1 text-xs"
+          />
+          <select
+            value={currentSortValue}
+            onChange={(e) => setSort(e.target.value)}
+            className="rounded-md border border-neutral-300 px-2 py-1 text-xs"
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
           <select
             value={search.status ?? ""}
             onChange={(e) => setFilter("status", e.target.value)}
@@ -110,6 +167,7 @@ function TicketsPage() {
                 <th className="px-2 py-2 font-medium">Intent</th>
                 <th className="px-2 py-2 font-medium">Status</th>
                 <th className="px-2 py-2 font-medium">Priority</th>
+                <th className="px-2 py-2 font-medium">Assigned</th>
               </tr>
             </thead>
             <tbody>
@@ -134,6 +192,7 @@ function TicketsPage() {
                     </span>
                   </td>
                   <td className="px-2 py-2 text-neutral-600">{t.priority}</td>
+                  <td className="px-2 py-2 text-neutral-600">{t.assigned_agent ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
