@@ -104,6 +104,9 @@ showed up against real models, a real browser, or a real database:
   correct facts looked made up (a fake 57% hallucination rate).
 - Seed dates were fixed in time, so weeks later every "still cancellable" order
   had expired. Seed dates now follow the clock.
+- Re-seeding kept the agent's saved state while ticket numbers started again
+  at 1, so a new ticket could inherit an old one's history and be handed off
+  for no reason. Seed now clears it.
 
 ## Known limits
 

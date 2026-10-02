@@ -1186,6 +1186,21 @@ latency in the cached run is meaningless (cache hits are 0 ms); the first,
 mostly live run had a median of ~5.9 s. Groq's 200k tokens/day judge limit ran
 out right at the end of the day's runs.
 
+## Seed checkpoint bug; local classifier tried and dropped (2026-10-02)
+
+**Bug:** `make seed` reset ticket ids but kept LangGraph's checkpoint tables.
+Thread ids are `ticket:{id}`, so a new ticket picked up an old ticket's saved
+state; one fresh jailbreak ticket inherited "2 clarifications already asked"
+and went straight to a person. Seed now truncates `checkpoints`,
+`checkpoint_writes`, `checkpoint_blobs`. Eval runs after a re-seed before
+this fix had some of this noise.
+
+**Tried, not kept:** a local intent classifier (bge-small embeddings +
+logistic regression) in front of the LLM for clear first messages. On 48
+tickets: 16% fewer LLM calls, intent accuracy 0.68 to 0.77, but one more
+failure (missed the second request in a two-part message). Not worth the
+extra moving part; removed to keep the project simple.
+
 ---
 
 ## Running list of known limitations
