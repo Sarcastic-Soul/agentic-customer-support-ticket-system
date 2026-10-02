@@ -9,9 +9,35 @@ channel; an LLM agent tries to actually resolve the issue against real order,
 payment and knowledge-base data; when it cannot or should not, it hands the
 ticket to a human with a full context packet, and can take it back afterwards.
 
-**Read `docs/` before writing code.** The blueprint is complete and decisions in
-it were made deliberately. Start with `docs/01-architecture.md` and
-`docs/07-build-stages.md`.
+The build is done. `docs/` holds four reader docs (`README.md` at the root,
+`docs/REPORT.md`, `docs/agent-orchestration.md`, `docs/architecture-overview.md`)
+and `docs/decisions/` - one short file per non-obvious choice. Check the
+decisions before "fixing" something that looks odd.
+
+## What's built
+
+- **Channels:** web chat (live progress steps while the agent works), WhatsApp
+  via Twilio, Gmail email (IMAP poll + SMTP), voice notes (Groq Whisper STT).
+  Each has a simulator at `/dev/simulate/*` so nothing needs a real phone or
+  mailbox. Real WhatsApp/email setup is a manual step.
+- **Intake:** every provider payload lands in `raw_events` first, dedupe on
+  `(channel, external_message_id)`, identity resolution to a customer, PII
+  redaction (Presidio + regex) into `messages.body_redacted`, then an `arq` job.
+- **Agent:** one LangGraph graph (below). Three specialists - orders,
+  logistics, payments - propose writes; `reconcile` settles conflicts in code;
+  `commit` runs them through `authorize()`; `verify` checks groundedness before
+  any reply goes out. Hybrid retrieval (pgvector + full-text, RRF, flashrank
+  rerank) over the KB.
+- **Fewer handoffs:** refunds over the ceiling go to an approval queue instead
+  of a full handoff; the agent asks up to 2 clarifying questions before giving
+  up; a human can hand a ticket back to the AI with a note.
+- **Console/admin (frontend):** ticket queue, ticket detail with transcript and
+  run trace ("why did the AI do that"), approvals, metrics, KB editor, login.
+- **Eval:** `eval/run_eval.py` over 55 cases in `eval/dataset/tickets.jsonl`
+  (outcome, tool, groundedness, LLM judge, ablations, confidence sweep);
+  promptfoo regression for the classify and verify prompts; optional Langfuse
+  tracing; Redis LLM response cache for reruns.
+- **Tests:** ~250 backend pytest tests plus Playwright e2e with a mocked API.
 
 ## Scope: prototype tolerance, not prototype infrastructure
 
@@ -30,25 +56,23 @@ directions. The rule is **stop polishing early, do not skip structure.**
 
 **Keep — these are not optional:**
 
-- Redis + `arq`, the worker and scheduler processes, Alembic migrations.
+- Redis + `arq`, the worker process, Alembic migrations.
 - `raw_events`, `refunds`, `shipments`, `agent_steps`, `tool_calls` as real
   tables. The eval harness queries across them.
 - PII redaction into `messages.body_redacted`.
 - The escalation loop, the handoff packet, the `verify` node, the eval harness.
-- Tests on the critical paths listed in `docs/07-build-stages.md#testing-policy`
-  (~40 tests): ticket transitions, dedupe, identity resolution, `authorize()`,
-  tool customer-scoping, PII, retrieval smoke.
+- Tests on the critical paths: ticket transitions, dedupe, identity resolution,
+  `authorize()`, tool customer-scoping, PII, retrieval smoke.
 
 **Genuinely out of scope:** skill-based assignment routing (the column exists;
-no algorithm), SLA breach cron, reranking, a trace UI, CI, mypy, coverage gates,
+no algorithm), SLA breach cron, CI, mypy, coverage gates,
 real load testing, RFC-7807 errors, cursor pagination.
 
 Full reasoning in `docs/decisions/0003-prototype-scope.md`. If something looks
 like an oversight, check that file before "fixing" it.
 
-If time runs short, **cut a whole stage** from the cut list in
-`docs/07-build-stages.md`. Never strip infrastructure to buy time — that trades a
-few hours for a class of bug that is invisible until it happens during a demo.
+Never strip infrastructure to save time — that trades a few hours for a class
+of bug that is invisible until it happens during a demo.
 
 ## Non-negotiables
 
@@ -92,20 +116,24 @@ see `docs/decisions/0006-specialist-agents.md`. Tools are typed
 Python functions behind a policy layer. Escalation pauses the graph at
 `interrupt()`; a human works it in the console and either resolves or returns
 control with a note, which resumes the graph from its checkpoint. Webhooks persist
-and enqueue; an `arq` worker runs the graph. One Postgres, one Redis, three
-processes (`api`, `worker`, `scheduler`).
+and enqueue; an `arq` worker runs the graph (and the email poll cron). One
+Postgres, one Redis, two processes (`api`, `worker`).
 
-Do **not** build per-channel agents. That was the first draft's mistake and
-`docs/00-plan-review.md` explains why at length.
+Do **not** build per-channel agents. That was the first draft's mistake: it
+duplicates the reasoning, tools and policy per channel and lets them drift.
 
 ## Commands
 
 ```bash
 make up        # docker compose: postgres 18 + pgvector, redis
 make migrate   # alembic upgrade head
-make seed      # synthetic customers, orders, transactions, KB
-make dev       # api + worker + scheduler + vite dev server
-make demo      # reset, start, run the scripted demo scenario
+make seed      # wipe + reseed every table, clear agent checkpoints, re-ingest KB
+make ingest    # re-chunk and re-embed KB articles only
+make dev       # api + worker + vite dev server
+make demo      # up, migrate, seed, start, run scripts/demo_scenario.py
+make test      # backend pytest
+make lint      # ruff check app
+make docker-up # whole stack in containers (seed/ingest still one-off)
 make eval      # python eval/run_eval.py (LLM cache on; --no-cache for latency)
 make promptfoo # prompt regression: classify + verify prompts (eval/promptfoo/)
 make e2e       # Playwright browser tests, API mocked (frontend/e2e/)
@@ -115,7 +143,9 @@ make langfuse  # optional self-hosted tracing UI on :3001
 `LLM_PROVIDER=stub` runs the whole pipeline offline with a deterministic fake
 model — use it for UI work and anything that would otherwise burn quota.
 
-Finer-grained, run from `backend/` with the venv active (`. .venv/bin/activate`):
+Finer-grained, run from `backend/` with the venv active (`. .venv/bin/activate`).
+The venv is `uv`-managed; after `uv sync`, run `uv pip install -e .` or pytest
+fails with "No module named 'app'".
 
 ```bash
 pytest                                   # all backend tests (async mode is implicit, see pyproject.toml)
@@ -134,12 +164,57 @@ pnpm lint      # oxlint
 
 ## Repository layout
 
-`docs/repository-layout.md` has the directory-by-directory map. Quick version: `backend/app/` is one
-directory per layer — `agent/` (LangGraph state machine, one file per node), `api/`, `channels/`,
-`core/`, `db/`, `hil/`, `ingress/`, `llm/`, `models/`, `policy/`, `rag/`, `schemas/`, `seed/`,
-`tools/`, `voice/`, `workers/`. `frontend/src/` is `routes/` + `hooks/` + `lib/`. `backend/tests/`
-mirrors the module layout rather than a unit/integration split — see
-`docs/07-build-stages.md#testing-policy` for which paths are required.
+```
+backend/
+  app/
+    main.py, config.py        FastAPI app; all settings (pydantic-settings, .env at repo root)
+    logging.py, observability.py   structured logs; optional Langfuse tracing
+    agent/                    LangGraph state machine
+      graph.py                wires the nodes; run.py drives one run and writes agent_runs
+      nodes/                  one file per node: prepare, classify, hard_route, supervisor,
+                              retrieve, specialist, reconcile, commit, answer, verify,
+                              respond, escalate
+      specialists.py          orders / logistics / payments: tools and prompt per domain
+      prompts/                every prompt as a .md file, loaded by prompts/__init__.py
+      state.py, steps.py      graph state; agent_steps recording
+      checkpoint.py           psycopg pool + Postgres checkpointer (thread "ticket:{id}")
+      escalation.py           handoff packet (summary, what the AI tried, suggested reply)
+      progress.py             live progress events for the web chat
+    api/                      routes: admin, auth, console, customer, dev (simulators), kb
+    channels/                 adapters, no LLM: base, web, whatsapp, email, email_parsing,
+                              voice, registry
+    ingress/                  raw_events -> dedupe -> identity -> PII -> enqueue (pipeline.py)
+    core/                     tickets (state machine), identity, conversation, pii, auth
+    policy/                   authorize() (ceilings), conflicts.py (reconcile rules),
+                              triggers.py (regex hard routes, e.g. legal/fraud)
+    tools/                    order/logistics/transaction tools; context.py = ToolContext;
+                              registry.py wraps each tool with authorize() + tool_calls logging
+    rag/                      chunk, embed (fastembed bge-small), ingest, search (hybrid), rerank
+    llm/                      registry.py (provider + fallback, model ids from .env), roles,
+                              cache (Redis), pricing, stub (offline fake model)
+    models/                   SQLAlchemy: commerce, support, escalation, kb, observability
+    db/session.py             asyncpg engine + sessions
+    seed/                     data.py (synthetic customers/orders/KB), run.py (`make seed`)
+    voice/stt.py              Groq Whisper transcription
+    workers/                  arq settings (jobs + email cron), tasks, queue, email_poll
+    hil/, schemas/            empty placeholders
+  alembic/                    migrations
+  tests/                      flat, one file per area (test_authorize.py, test_ingress.py, ...)
+frontend/
+  src/routes/                 TanStack file routes: /chat, /login, /console, /console/approvals,
+                              /admin/tickets, /admin/metrics, /admin/kb
+  src/pages/, src/components/ page bodies; AppShell, RunTrace, Transcript, chat/
+  src/hooks/                  useWebChat (chat + progress), useVoiceRecorder
+  src/lib/                    API clients (api, console-api, admin-api, auth-api), helpers
+  e2e/                        Playwright specs with mocked API (mocks.ts)
+eval/
+  run_eval.py                 harness; dataset/tickets.jsonl (55 cases); reports/ (JSON output)
+  promptfoo/                  classify + verify prompt regression
+scripts/demo_scenario.py      automated half of the escalation demo
+docs/                         REPORT, agent-orchestration, architecture-overview, decisions/
+docker-compose.yml            postgres 18 + pgvector, redis, pgweb; `--profile app` for the app
+docker-compose.langfuse.yml   optional Langfuse on :3001
+```
 
 ## Stack facts that bite
 
@@ -170,17 +245,13 @@ mirrors the module layout rather than a unit/integration split — see
   `docs/decisions/0001-no-nextjs.md`.
 - Every external channel gets a simulator **before** the real adapter.
 
-## Record-keeping while building
+## Record-keeping
 
-Three files, all cheap, all of which make the final report mostly write itself:
-
-- **`docs/PROGRESS.md`** — update at the end of every stage. What works, what is
-  knowingly broken, what was skipped. Two minutes each time.
 - **`docs/decisions/NNNN-*.md`** — one short file per non-obvious choice. Context,
   decision, reasoning, consequences. Only for choices someone might reasonably
   question later.
-- **`eval/dataset/tickets.jsonl`** — every manual test you run gets saved as a
-  case, from Stage 3 onward. Target ~50. Do not leave the dataset until Stage 11.
+- **`eval/dataset/tickets.jsonl`** — a manual test worth keeping becomes a case.
+- Keep the four reader docs short and plain; do not add new docs.
 
 ## Git
 

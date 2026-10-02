@@ -8,7 +8,7 @@ lands outside the known INTENTS list and normalizes to "unknown", which
 plan_node maps to tool_group "none" (chitchat) - no retrieval, no tools, a
 plain conversational reply. The real classify/plan/retrieve/act/answer/verify
 behaviour against live Gemini/Groq, including a genuine escalation, was
-verified manually - see docs/PROGRESS.md Stage 5 and 6.
+verified manually.
 """
 
 from sqlalchemy import select

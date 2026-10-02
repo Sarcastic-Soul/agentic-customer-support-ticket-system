@@ -1,4 +1,4 @@
-"""The fiddly part of the email channel (docs/09-risks.md R6) - real
+"""The fiddly part of the email channel - real
 email.message.Message objects, not a live mailbox.
 """
 

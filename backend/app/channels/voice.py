@@ -1,8 +1,8 @@
 """Voice channel adapter: recorded audio from the web widget's microphone
 button. Transcribes to text inside parse() - same contract as every other
 adapter, no LLM call and no business logic here, and the transcript is the
-only thing the orchestrator ever sees (docs/01-architecture.md: "text: plain
-text, already extracted from HTML/audio").
+only thing the orchestrator ever sees (plain text, already extracted from
+HTML/audio).
 
 Replies are delivered the same way WebAdapter delivers them: the customer's
 browser already holds a WebSocket connected to /channels/web/ws for the same
@@ -55,7 +55,7 @@ class VoiceAdapter:
         return DeliveryReceipt(ok=True)
 
     def style(self) -> ResponseStyle:
-        # Short sentences, no markdown, no URLs - matches docs/07-build-stages.md
-        # Stage 10. Enforced generically for every non-markdown channel by
-        # app/channels/base.py:format_for_style, called from respond_node.
+        # Short sentences, no markdown, no URLs. Enforced generically for every
+        # non-markdown channel by app/channels/base.py:format_for_style, called
+        # from respond_node.
         return ResponseStyle(max_length=400, markdown=False, latency_budget_ms=20_000)

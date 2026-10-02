@@ -1,6 +1,6 @@
 # 0007 — Fewer handoffs: approval queue, clarifying questions, recovery
 
-**Date:** 2026-10-01 · **Status:** accepted · **Amends:** `docs/05-escalation-policy.md`
+**Date:** 2026-10-01 · **Status:** accepted · **Amends:** the original escalation policy
 
 ## Context
 

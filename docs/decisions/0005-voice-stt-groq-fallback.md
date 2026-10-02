@@ -4,7 +4,7 @@
 
 ## Context
 
-`docs/02-tech-stack.md` specifies a three-tier STT design for Stage 10: NVIDIA
+The original plan was a three-tier STT design: NVIDIA
 Parakeet TDT 0.6B v3 local primary, `faster-whisper` (`distil-large-v3`) local
 fallback for other languages, and Groq's hosted `whisper-large-v3` only "if
 local inference is too slow on the demo machine". `config.py` already

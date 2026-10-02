@@ -42,7 +42,7 @@ dev:
 	wait
 
 # seed truncates+reseeds every table (app/seed/run.py) - this is the
-# "fresh, reproducible" reset docs/08-evaluation.md and CLAUDE.md call for,
+# "fresh, reproducible" reset the eval and demo need,
 # there is no separate `reset` target.
 demo:
 	$(MAKE) up

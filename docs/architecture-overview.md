@@ -101,7 +101,7 @@ that?" screen in the admin console and the evaluation harness. Langfuse
 - **Data:** PostgreSQL 18 with pgvector, Redis.
 - **Search:** pgvector + Postgres full-text, then a flashrank reranker.
 - **Frontend:** Vite, React, TanStack Router and Query.
-- **Processes:** `api`, `worker`, `scheduler`. One Postgres, one Redis.
+- **Processes:** `api` and `worker` (the worker also runs the email poll cron). One Postgres, one Redis.
 
 ## Where to look in the code
 

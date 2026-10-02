@@ -9,7 +9,7 @@ from app.config import settings
 
 
 class Base(DeclarativeBase):
-    # Every timestamp in this schema is timestamptz (docs/03-data-model.md).
+    # Every timestamp in this schema is timestamptz.
     # Mapping datetime here once means every `Mapped[datetime]` column gets
     # timezone=True without having to repeat DateTime(timezone=True) on each.
     type_annotation_map = {datetime: DateTime(timezone=True)}

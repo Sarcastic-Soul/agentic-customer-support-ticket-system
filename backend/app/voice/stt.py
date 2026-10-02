@@ -1,12 +1,12 @@
 """Speech-to-text for voice notes.
 
-docs/02-tech-stack.md's stated design is Parakeet TDT local primary, a
+The original design was Parakeet TDT local primary, a
 faster-whisper local fallback, and Groq's hosted whisper-large-v3 only as a
 last resort "if local inference is too slow on the demo machine". This
 build machine measures under 1GB free RAM with swap already in heavy use
 and no GPU - local inference of either model is not practical here, so this
 goes straight to that documented API fallback. See
-docs/decisions/0004-voice-stt-groq-fallback.md.
+docs/decisions/0005-voice-stt-groq-fallback.md.
 """
 
 import httpx

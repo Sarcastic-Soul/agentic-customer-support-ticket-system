@@ -3,7 +3,7 @@ the real LangGraph orchestrator against a live database, scores each case
 deterministically plus an LLM judge, and prints a Markdown table + writes
 JSON to eval/reports/.
 
-Not a benchmarking framework - one script, ~50 cases. See docs/08-evaluation.md.
+Not a benchmarking framework - one script, ~55 cases.
 
 Usage (run from backend/, matching `make eval`; see Makefile):
     python ../eval/run_eval.py                    # full system, all cases
@@ -236,7 +236,7 @@ async def run_case(case: dict, *, run_tag: str) -> dict:
             # blind and flags every specific, correctly-grounded detail (a
             # KB-cited policy number, a system-generated ticket reference)
             # as "unverifiable", inflating hallucination_rate on facts that
-            # were never invented. See docs/PROGRESS.md Stage 11/12.
+            # were never invented.
             "retrieved": (final_state or {}).get("retrieved", []),
             "tool_results": (final_state or {}).get("tool_results", []),
             "ticket_reference": ticket.reference if ticket else None,

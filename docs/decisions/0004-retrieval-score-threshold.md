@@ -46,7 +46,7 @@ to **0.55** — comfortably inside that gap.
 - This number is calibrated against the current 8-document/9-chunk seeded KB
   and `bge-small-en-v1.5`. **Re-check it** if the KB grows substantially
   (more documents narrows topic-to-topic similarity gaps), if the embedding
-  model changes (e.g. the `bge-m3` swap noted in `02-tech-stack.md`), or if
+  model changes (e.g. a swap to `bge-m3`), or if
   Stage 11's adversarial eval cases suggest it's off.
 - The Stage 11 threshold sweep (`INTENT_CONFIDENCE_MIN` in the eval harness)
   should get a sibling sweep on `RETRIEVAL_SCORE_MIN` once the eval dataset

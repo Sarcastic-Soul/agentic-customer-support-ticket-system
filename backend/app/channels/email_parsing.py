@@ -1,7 +1,7 @@
 """MIME parsing and threading helpers, kept separate from the adapter so
 they're testable as pure functions against real email.message.Message
 objects, not through a live IMAP connection. This is the fiddly part of the
-email channel per docs/09-risks.md R6 - 80% correct quoted-text stripping is
+email channel - 80% correct quoted-text stripping is
 the accepted bar, not perfection.
 """
 
@@ -12,8 +12,8 @@ from email.utils import parseaddr
 # Crude but effective: catches the most common quoted-reply openers across
 # Gmail, Outlook and Apple Mail without needing a full quote-detection
 # library. A stray signature or quote line surviving occasionally is an
-# accepted rough edge, not a bug to chase - see docs/01-architecture.md's
-# "what prototype tolerance means here".
+# accepted rough edge, not a bug to chase (prototype scope, see
+# docs/decisions/0003-prototype-scope.md).
 _QUOTE_MARKERS = [
     re.compile(r"^On .+ wrote:\s*$", re.MULTILINE),
     re.compile(r"^-{2,}\s*Original Message\s*-{2,}", re.MULTILINE | re.IGNORECASE),

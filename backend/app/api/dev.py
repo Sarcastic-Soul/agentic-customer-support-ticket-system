@@ -71,8 +71,8 @@ async def simulate_email_message(
     """Exercises the same ingest path app/workers/email_poll.py's real IMAP
     poll does (identity resolution by address, Message-ID/References
     threading, dedupe), without IMAP, a mailbox, or a wait for the poll
-    interval - see docs/PROGRESS.md Stage 8 for why the real-mailbox test
-    is a manual step instead of an automated one.
+    interval. The real-mailbox test is a manual step: it needs a Gmail
+    account and app password.
     """
     external_message_id = body.external_message_id or str(uuid.uuid4())
     thread_id = body.in_reply_to or external_message_id
@@ -109,8 +109,8 @@ async def simulate_whatsapp_message(
 ) -> SimulateResponse:
     """Exercises the exact same ingest path the real /channels/whatsapp/webhook
     does (identity resolution, dedupe, threading), without Twilio, a tunnel,
-    or a phone - see docs/PROGRESS.md Stage 7 for why the real phone test is
-    a manual step instead of an automated one.
+    or a phone. The real phone test is a manual step: it needs a Twilio
+    sandbox and a public tunnel.
     """
     external_message_id = body.external_message_id or str(uuid.uuid4())
 

@@ -22,8 +22,8 @@ from app.voice.stt import TranscriptionError, transcribe
 logger = get_logger(__name__)
 
 # Twilio returns a specific error when a free-form message is sent outside
-# the 24-hour customer service window (see docs/02-tech-stack.md and
-# docs/09-risks.md R14) - only template messages work there, which this
+# the 24-hour customer service window - only template messages work there,
+# which this
 # prototype doesn't implement. Recognizing it lets us log something useful
 # instead of a generic send failure.
 OUTSIDE_WINDOW_ERROR_CODE = 63016
@@ -59,7 +59,7 @@ class WhatsAppAdapter:
             # A pure voice note has no Body - Stage 10's "accept WhatsApp
             # audio -> normal pipeline, unchanged" means transcribing it
             # here, inside parse(), same as every other channel's text
-            # extraction (docs/01-architecture.md).
+            # extraction.
             text = await self._transcribe_voice_note(attachments[0])
 
         return InboundMessage(

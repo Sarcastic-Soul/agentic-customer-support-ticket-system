@@ -187,7 +187,7 @@ async def test_execute_tool_coerces_string_amount_from_llm_tool_call(session):
     # arithmetic on `amount` (comparing it to the policy ceiling) - without
     # coercing args through the tool's schema first, that raised
     # "'>' not supported between instances of 'str' and 'decimal.Decimal'"
-    # instead of returning a denial. See docs/PROGRESS.md Stage 6.
+    # instead of returning a denial.
     customer = await _make_customer(session, "refund-string-amount")
     order = await _make_order(session, customer, "string-amount")
     txn = await _make_txn(session, order, customer, suffix=1, amount="5000.00")

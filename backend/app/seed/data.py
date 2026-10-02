@@ -1,6 +1,6 @@
 """Synthetic seed data, fixed random seed for reproducible demos.
 
-Edge cases are written first and by hand - per docs/03-data-model.md, they are
+Edge cases are written first and by hand - they are
 what make a demo interesting, not the volume. Everything after the edge-case
 block is generated to pad out the numbers.
 """

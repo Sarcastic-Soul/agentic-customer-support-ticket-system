@@ -66,8 +66,7 @@ class EmailAdapter:
         version used external_thread_id as the To: address directly, which
         happened to look email-shaped in manual testing (a simulator test
         used a Message-ID formatted like an address) but would have mailed
-        the wrong "address" - a Message-ID string - in real use. See
-        docs/PROGRESS.md Stage 8.
+        the wrong "address" - a Message-ID string - in real use.
         """
         to_address, in_reply_to, subject = await self._reply_context(reply.external_thread_id)
         if to_address is None:

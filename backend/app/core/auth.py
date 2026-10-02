@@ -1,5 +1,5 @@
 """JWT auth for the console/admin API. Local, no external identity
-provider - fine for an internal tool, per docs/02-tech-stack.md. Passwords
+provider - fine for an internal tool. Passwords
 are argon2-hashed; the seed script (app/seed/run.py) sets every human
 agent's password to "dev-password" for local use.
 """

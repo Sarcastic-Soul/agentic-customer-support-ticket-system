@@ -4,8 +4,7 @@ pick who works a message) and by the specialist node (to run one of them).
 
 Specialists split the work by *domain* (money, the order record, the
 parcel), never by channel - see docs/decisions/0006-specialist-agents.md
-for why this is different from the per-channel agents that
-docs/00-plan-review.md rejected.
+for why this beats per-channel agents (the first draft's design).
 
 Knowledge questions have no specialist of their own: the retrieve node is
 the knowledge lane, and its step is tagged agent="knowledge" in the trace.

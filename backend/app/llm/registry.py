@@ -31,8 +31,7 @@ from app.logging import get_logger
 logger = get_logger(__name__)
 
 # Free-tier RPM ceilings, measured against the real usage dashboards (Google
-# AI Studio / Groq console), not documentation guesses - see
-# docs/PROGRESS.md Stage 12. Missing from this map (stub, any model not
+# AI Studio / Groq console), not documentation guesses. Missing from this map (stub, any model not
 # listed) means "don't pace it".
 _RPM_LIMITS: dict[tuple[str, str], int] = {
     ("gemini", "gemini-3.8-flash"): 5,
@@ -89,8 +88,7 @@ class _RateLimiter:
 _rate_limiter = _RateLimiter()
 
 # (setting for primary model, setting for fallback model) per role. verify
-# shares classify's tier/fallback, summarize shares reason's - see
-# docs/02-tech-stack.md's role table.
+# shares classify's tier/fallback, summarize shares reason's.
 _ROLE_MODELS: dict[LLMRole, tuple[str, str]] = {
     LLMRole.classify: (settings.model_classify, settings.fallback_model_classify),
     LLMRole.verify: (settings.model_verify, settings.fallback_model_classify),
@@ -234,7 +232,7 @@ class LLMClient:
             self._candidates: list[tuple[str, str]] = [("stub", "stub")]
         elif role == LLMRole.judge:
             # judge_model is deliberately a different provider from the
-            # system under test (docs/08-evaluation.md), not the same
+            # system under test, not the same
             # primary/fallback pair every other role uses - going through
             # llm_provider first would just be a guaranteed-wrong-model
             # attempt burning a retry (and quota) before falling back here
@@ -335,7 +333,7 @@ class LLMClient:
                         # burning the remaining retries and their backoff
                         # sleeps on a call guaranteed to fail again. Found by
                         # live-testing against a real exhausted free tier
-                        # (see docs/PROGRESS.md Stage 5) - the naive retry
+                        # - the naive retry
                         # loop took 235s for one reply before this fix.
                         break
                     if attempt + 1 < settings.llm_max_retries:

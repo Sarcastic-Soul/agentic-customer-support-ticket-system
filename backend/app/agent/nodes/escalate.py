@@ -19,8 +19,7 @@ async def escalate_node(state: AgentState, config) -> dict:
     that line - genuinely re-executes. Found the hard way: without the guard
     below, a resume tries to create a second Escalation row and re-run
     transition_ticket("escalated") on a ticket already in "escalated"
-    (or worse, already moved on), raising InvalidTransition. See
-    docs/PROGRESS.md Stage 6.
+    (or worse, already moved on), raising InvalidTransition.
 
     The guard: look for an existing, not-yet-resolved escalation for this
     ticket with this exact reason_code before doing any of the one-time
@@ -112,6 +111,6 @@ def route_after_escalate(state: AgentState) -> str:
     # Resumed with a human note -> the AI composes a fresh reply using it
     # (existing retrieved/tool_results context, no redundant tool calls -
     # the human already acted on whatever needed approval). Any other
-    # resume (or none, if the thread stays paused after "resolve" - see
-    # docs/PROGRESS.md Stage 6) ends the run here.
+    # resume (or none, if the thread stays paused after "resolve") ends the
+    # run here.
     return "answer" if state.get("human_note") else "end"

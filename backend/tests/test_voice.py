@@ -1,6 +1,6 @@
 """VoiceAdapter and the generic ResponseStyle formatting it exercises.
-transcribe() itself talks to a real API and is verified live (see
-docs/PROGRESS.md Stage 10), not re-verified here - these mock it, same
+transcribe() itself talks to a real API and was verified live, not
+re-verified here - these mock it, same
 convention as the graph tests mocking the LLM.
 """
 

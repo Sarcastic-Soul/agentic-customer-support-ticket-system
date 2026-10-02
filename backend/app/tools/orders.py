@@ -219,7 +219,7 @@ async def initiate_return(ctx: ToolContext, order_number: str, sku: str, reason:
         }
 
     # Whole-order status, not per-item - a real system would track return
-    # state per line item. Fine for a prototype; see docs/PROGRESS.md.
+    # state per line item. Fine for a prototype.
     order.status = "returned"
     await ctx.session.flush()
     return {"initiated": True, "order_number": order.order_number, "sku": sku}

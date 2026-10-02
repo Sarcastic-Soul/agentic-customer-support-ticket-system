@@ -5,8 +5,8 @@ registry's own fallback-then-raise behaviour - this tests what happens to
 the *customer* once that exception reaches the worker). "Tool raises" is
 already handled by app/tools/registry.py's execute_tool - this is a
 regression test for that existing behaviour, not a new fix. "No Redis" and
-"no tunnel" are infra-level (see docs/PROGRESS.md Stage 12) and were
-verified manually rather than in pytest - see the notes there.
+"no tunnel" are infra-level and were verified manually rather than in
+pytest.
 """
 
 from sqlalchemy import select

@@ -1,8 +1,8 @@
 """Tests run against LLM_PROVIDER=stub, not real APIs - deterministic, free,
 and fast. The fallback-on-failure and structured-output-parsing-error paths
 are exercised directly against the registry's retry loop rather than by
-actually breaking a live provider (that was verified manually - see
-docs/PROGRESS.md Stage 4 - and isn't worth re-running on every test pass).
+actually breaking a live provider (that was verified manually, and isn't
+worth re-running on every test pass).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -97,8 +97,8 @@ async def test_quota_exhaustion_skips_remaining_retries_and_falls_back(monkeypat
     # Real bug found live-testing Stage 5 against a genuinely exhausted free
     # tier: without this, a 429 gets retried llm_max_retries times (with
     # backoff sleeps) before falling back, even though a quota error will
-    # not clear in the seconds this request has to live. See
-    # docs/PROGRESS.md Stage 5 - one reply took 235s before this fix.
+    # not clear in the seconds this request has to live. One reply took
+    # 235s before this fix.
     monkeypatch.setattr("app.llm.registry.settings.llm_provider", "gemini")
     monkeypatch.setattr("app.llm.registry.settings.llm_fallback_provider", "groq")
     monkeypatch.setattr("app.llm.registry.settings.llm_max_retries", 3)
@@ -139,7 +139,7 @@ async def test_raises_when_every_provider_fails(monkeypatch):
 
 
 # Real free-tier RPM ceilings, measured against the actual usage dashboards
-# (not the docs) - see docs/PROGRESS.md Stage 12. gemini-3.8-flash: 5,
+# (not the docs). gemini-3.8-flash: 5,
 # gemini-3.5-flash-lite: 15, Groq openai/gpt-oss-*: 30.
 
 

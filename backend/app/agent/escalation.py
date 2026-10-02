@@ -1,5 +1,5 @@
 """Builds the handoff packet - the thing that turns "the AI gave up" into
-"the AI did the first 80% of the work". See docs/05-escalation-policy.md.
+"the AI did the first 80% of the work".
 `summary` and `suggested_reply` are LLM-generated; everything else here is
 assembled deterministically from state, never authored by the model - the
 timeline and entities must be facts a human can trust without re-verifying.

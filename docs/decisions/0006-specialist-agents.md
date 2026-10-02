@@ -1,7 +1,7 @@
 # 0006 — Specialist agents per domain, with conflicts settled in code
 
-**Date:** 2026-10-01 · **Status:** accepted · **Replaces:** the `plan` + `act`
-"tool group" design in `docs/04-agent-design.md`
+**Date:** 2026-10-01 · **Status:** accepted · **Replaces:** the earlier `plan` + `act`
+"tool group" design
 
 ## Context
 
@@ -14,7 +14,7 @@ already restricted tools per intent, but it could only work one intent per
 message. "Where is my order, and refund the double charge" was handled as
 whichever intent the classifier picked first.
 
-`docs/00-plan-review.md` argues against per-*channel* agents. Nothing here
+The first draft's per-*channel* agents were rejected early. Nothing here
 changes that: there is still one channel-agnostic graph. The split is by
 business domain, inside the graph.
 

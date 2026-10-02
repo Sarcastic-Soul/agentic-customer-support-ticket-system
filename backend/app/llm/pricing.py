@@ -1,5 +1,5 @@
 """Rough cost estimation for agent_runs.est_cost_usd. Paid-tier prices as of
-2026-09-08 (docs/02-tech-stack.md); the seeded/dev traffic actually runs on
+2026-09-08; the seeded/dev traffic actually runs on
 free tiers, so this is a "what would this have cost" estimate, not a bill.
 """
 

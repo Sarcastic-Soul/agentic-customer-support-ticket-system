@@ -1,4 +1,4 @@
-"""Runs the automated half of the Stage 6 demo script (docs/07-build-stages.md)
+"""Runs the automated half of the escalation demo
 against a running `make demo` stack, via the /dev/simulate endpoints - no
 real WhatsApp/tunnel needed. Steps 4-5 (claim in the console, reply, the
 customer seeing the human's reply) need an actual person at the console, so

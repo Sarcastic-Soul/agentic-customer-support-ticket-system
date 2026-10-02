@@ -29,10 +29,10 @@ Accepted, not worth spending time on:
 
 Kept, non-negotiable:
 
-- **Redis + `arq`, with worker and scheduler processes.** LLM calls take seconds
+- **Redis + `arq`, with a separate worker process.** LLM calls take seconds
   on a rate-limited free tier; the queue is what keeps webhooks fast and gives
   retry-with-backoff. On a free tier the retry path is exercised regularly.
-- **Alembic.** The schema changes across twelve stages.
+- **Alembic.** The schema changed many times during the build.
 - **`raw_events`.** Persist before enqueueing, so a crash between webhook and job
   never loses a customer message.
 - **`refunds` as its own table.** A refund has an approval lifecycle a payment
@@ -64,8 +64,7 @@ grading.
 
 The failure mode to avoid is stripping structure to buy time, then spending that
 time debugging problems the structure would have prevented. If time runs short,
-**cut a whole stage** — that is what the cut list in `07-build-stages.md` is for.
-It is cheaper and more honest than half-building six of them.
+**cut a whole feature**. It is cheaper and more honest than half-building six of them.
 
 ## Consequences
 

@@ -97,7 +97,7 @@ async def get_queue(
 ) -> list[EscalationSummary]:
     """Unclaimed queue by default. `mine=true` instead lists escalations this
     agent has claimed and not yet resolved/returned - otherwise a claimed
-    ticket has no list it appears on at all (see docs/PROGRESS.md).
+    ticket has no list it appears on at all.
     """
     query = select(Escalation, Ticket.reference).join(Ticket, Ticket.id == Escalation.ticket_id)
     if mine:
@@ -267,8 +267,8 @@ async def resolve_escalation(
 ) -> dict:
     """Marks the escalation (and ticket) resolved. Does not resume the
     paused graph - there is nothing more for the AI to do, and an
-    interrupted LangGraph thread left unresumed is inert, not a leak (see
-    docs/PROGRESS.md Stage 6 for the trade-off this implies for agent_runs).
+    interrupted LangGraph thread left unresumed is inert, not a leak (its
+    agent_run just never gets a finished_at).
     """
     escalation = await session.get(Escalation, escalation_id)
     if escalation is None:

@@ -1,6 +1,6 @@
 """Deterministic escalation triggers - keyword-based, checked before any
-expensive reasoning. These always win over model judgement; see
-docs/05-escalation-policy.md's trigger table. A short, defensible keyword
+expensive reasoning. These always win over model judgement. A short,
+defensible keyword
 list, not an NLP classifier - false negatives here just mean the judgemental
 triggers (low confidence, ungrounded answer) catch it downstream instead.
 """

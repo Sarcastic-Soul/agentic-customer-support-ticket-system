@@ -76,7 +76,7 @@ async def execute_tool(
     string), and a tool doing real arithmetic on it (request_refund
     comparing `amount` against the policy ceiling) raises a TypeError
     instead of running. Found live: "'>' not supported between instances of
-    'str' and 'decimal.Decimal'" - see docs/PROGRESS.md Stage 6.
+    'str' and 'decimal.Decimal'".
     """
     start = time.monotonic()
     result: dict

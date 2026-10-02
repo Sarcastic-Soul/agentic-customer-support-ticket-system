@@ -1,5 +1,5 @@
 """IMAP polling: an arq cron job, not a live push subscription (IMAP IDLE) -
-docs/07-build-stages.md's explicit choice, matching the 30-60s cadence every
+a deliberate choice, matching the 30-60s cadence every
 other "how fresh does this need to be" decision in this project uses.
 imaplib is blocking, so the actual network I/O runs in a thread
 (asyncio.to_thread) and returns raw bytes; parsing and ingestion happen back

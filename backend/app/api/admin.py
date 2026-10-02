@@ -102,7 +102,7 @@ async def list_tickets(
         await session.execute(query.order_by(order_col).limit(limit).offset(offset))
     ).scalars().all()
 
-    # "Who has this?" (docs/PROGRESS.md - a claimed ticket used to be
+    # "Who has this?" (a claimed ticket used to be
     # findable nowhere but the escalation console). One batch query for the
     # latest escalation per visible ticket, one for agent names - a couple
     # of tickets on screen at a time, not worth per-ticket queries.
