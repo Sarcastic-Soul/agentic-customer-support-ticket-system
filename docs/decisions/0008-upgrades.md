@@ -36,8 +36,8 @@ CPU) over query and chunk together, then keeps the top `RETRIEVAL_FINAL_K`.
 - **Not a replacement:** `agent_runs`, `agent_steps` and `tool_calls` stay
   the record of truth (non-negotiable #9). The console and the eval harness
   read those. Langfuse is a richer view for debugging prompts.
-- **Not run yet:** the compose file is based on Langfuse's own v3 compose
-  and has not been started here.
+- **Verified 2026-10-02:** `make langfuse` starts it; real eval runs showed
+  up as one trace per ticket with every Gemini call, its tokens and cost.
 
 ### 3. Presidio for PII, on top of the regex rules
 

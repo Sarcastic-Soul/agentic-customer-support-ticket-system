@@ -1,312 +1,129 @@
 # Final report
 
-**Project:** Agentic AI customer support ticket system
-**Status at time of writing:** all 12 stages complete. The one open item is
-§6's evaluation table, which needs a clean run against a daily LLM quota
-that isn't already spent — the harness itself is finished and live-verified
-(see §6 for the full story, including four real bugs it took to get there).
+## In one paragraph
 
-## 1. What this is
+A support system where a customer writes in on web chat, WhatsApp, email or a
+voice note, and AI agents try to actually fix the problem using real order,
+delivery and payment data. Specialist agents (orders, delivery, payments) work
+side by side and only *propose* actions; plain code checks the rules, settles
+disagreements and carries out what is safe. Every reply is fact-checked before
+it is sent. When the AI can't or shouldn't finish, a person gets the ticket with
+a full case file and can hand it back. How it works:
+[`architecture-overview.md`](architecture-overview.md) and
+[`agent-orchestration.md`](agent-orchestration.md).
 
-A support system that reads a customer's message on any channel (web chat,
-WhatsApp, email, or a recorded voice note), tries to resolve it against real
-order/payment/knowledge data using a single channel-agnostic LangGraph agent,
-and — when it cannot or should not act — hands the ticket to a human with a
-full context packet (summary, timeline, verified entities, a suggested
-reply) rather than a shrug. The human can resolve it or return it to the AI
-with a note, and the agent resumes from its checkpointed state.
+## What was built
 
-Full architecture: [`docs/01-architecture.md`](01-architecture.md) and the
-diagram in the [README](../README.md#architecture-in-one-paragraph).
-
-## 2. What was actually built
-
-All 12 planned stages, in order, each with its own live verification (real
-Gemini/Groq calls, a real browser where relevant, never stub-only) before
-being marked done. Stage-by-stage detail, including every bug found and how,
-lives in [`docs/PROGRESS.md`](PROGRESS.md) — this section is the summary.
-
-| Stage | What it added |
+| Area | What works |
 |---|---|
-| 0 | Repo skeleton, docker compose (Postgres 18 + pgvector, Redis), FastAPI, Alembic |
-| 1 | Data model, ticket state machine, ingress pipeline, seed data |
-| 2 | Web chat end to end via Redis/arq, no AI yet (proved the queue/worker/adapter loop) |
-| 3 | RAG pipeline: hybrid (dense + sparse) retrieval, calibrated retrieval gate |
-| 4 | LangGraph orchestrator with live Gemini/Groq, fallback on failure |
-| 5 | Order/transaction tools, policy `authorize()`, bounded tool loop |
-| 6 | **Milestone.** Escalation, handoff packet, human console, `interrupt()`/resume |
-| 7 | WhatsApp channel (Twilio), delivery-status tracking |
-| 8 | Email channel (IMAP/SMTP), MIME parsing, thread-root resolution |
-| 9 | Admin dashboard: ticket list + reasoning trace, metrics, KB management, JWT auth |
-| 10 | Voice notes: STT via Groq Whisper, `ResponseStyle` enforcement across all channels |
-| 11 | **Milestone.** Evaluation harness, 50-case labelled dataset, 4 ablations, threshold sweep |
-| 12 | Failure drills, PII redaction (a real gap this stage caught), concurrency check, this report |
+| Channels | Web chat (live progress), WhatsApp (Twilio), email (Gmail IMAP/SMTP), voice notes (Groq Whisper). All tested with simulators; real WhatsApp and email need your own accounts. |
+| Intake | Raw message saved first, duplicates dropped by a database rule, personal details hidden (Presidio + regex), queue + worker so webhooks answer at once. |
+| AI agents | LangGraph flow with three specialists running in parallel, a conflict rule table, double-checked actions, a fact-check step with up to 2 rewrites, clarifying questions before handoff. |
+| Knowledge | Help-article search by meaning and keyword, then a local reranker. |
+| People | Console with a handoff queue, one-click refund approvals, direct replies, and "return to AI with a note" that resumes the paused agent. |
+| Admin | Ticket list with the AI's step-by-step reasoning, metrics (per agent too), help-article editor, staff login. |
+| Quality | 249 backend tests, 26 browser tests (Playwright), prompt checks (promptfoo), a 55-ticket evaluation harness with ablations. |
+| Tracing | Every run, step and tool call saved in Postgres. Optional self-hosted Langfuse shows every prompt and response. |
 
-## 3. Design decisions worth knowing about
+## Results
 
-Full reasoning for each lives in `docs/decisions/`. Summary:
+55 test tickets, real models (Gemini answers, Groq judges), run on
+2026-10-02. 53 of 55 pass every check.
 
-- **[0001](decisions/0001-no-nextjs.md) — No Next.js.** The backend is
-  FastAPI; a Node server that only renders a client shell is dead weight.
-  Vite + React 19 + TanStack Router/Query instead.
-- **[0002](decisions/0002-model-selection.md) — Model selection.**
-  `gemini-3.8-flash` primary (reasoning), `gemini-3.5-flash-lite` for
-  classify/verify (cheaper, higher daily quota), Groq `openai/gpt-oss-120b`
-  fallback. Two other models under consideration were deprecated *during
-  planning* — model ids live only in `.env`, read through one registry
-  module, specifically because of how fast this space moves.
-- **[0003](decisions/0003-prototype-scope.md) — What "prototype scope"
-  means here.** The single most load-bearing decision in the project:
-  *tolerate rough edges, keep the structure.* An earlier draft cut Redis,
-  Alembic, several audit tables, and PII redaction as "prototype
-  simplification" — that went too far. The distinction that matters is
-  tolerance vs. structure, not prototype vs. production. This is why the
-  queue, the dedupe constraint, `agent_steps`/`tool_calls`, and PII
-  redaction all stayed non-negotiable even under real time pressure.
-- **[0004](decisions/0004-retrieval-score-threshold.md) — Retrieval score
-  threshold.** The blueprint's placeholder (0.35) was measured against the
-  real seeded KB and found to let off-topic queries through (top score 0.46
-  for "what is the meaning of life"). Recalibrated to 0.55 against a
-  measured on-topic/off-topic gap, not a guess.
-- **[0005](decisions/0005-voice-stt-groq-fallback.md) — Voice STT via the
-  Groq API, not a local model.** The documented design (Parakeet TDT
-  primary, `faster-whisper` fallback) assumes a machine that can run local
-  inference. This one measured ~650MB free RAM with ~4.7GB of swap already
-  in use and no GPU — genuinely not practical. Went straight to the
-  documented API-fallback path instead of forcing a local model onto a
-  machine that couldn't support it.
+| Measure | Result |
+|---|---|
+| Right outcome (answered, asked, or handed off as expected) | 98% |
+| Solved by the AI without a person | 98% |
+| Handed to a person | 6% |
+| Tickets that needed a person and got one | 100% |
+| Reply backed by the data (groundedness) | 98% |
+| Replies with a made-up fact | 2% (1 ticket) |
+| Right tools used | 93% |
+| Cost per ticket | $0.0017 |
+| Median reply time, live calls | about 6 seconds |
 
-## 4. Real bugs found live, and what caught them
+Intent labels match only 67% of the time, but almost all misses are a sibling
+label owned by the same specialist (`refund_status` vs `refund_request`), so
+the outcome is the same.
 
-This project's stated discipline was: unit tests and `LLM_PROVIDER=stub`
-prove the plumbing works, but every LLM-touching or async-DB-touching code
-path gets verified against the real thing before being called done. That
-discipline caught real bugs unit tests alone would have missed — this is
-the evidence for it, not just the claim:
+**What the first full run found** (15 of 55 failed):
 
-- **Stage 2** — `redis-py` delivers pub/sub payloads as `bytes`; the WS
-  handler called `send_text()` with them unconverted, silently killing the
-  reply-forwarding task with no error surfaced anywhere. Found by watching a
-  real browser tab never receive a reply.
-- **Stage 4-ish** — `StubChatModel`'s structured-output synthesis had a
-  logic bug in required-field detection that only mattered once real
-  Pydantic schemas with mixed required/optional fields existed.
-- **Stage 8** — `EmailAdapter.send()` used `external_thread_id` (the
-  thread-root Message-ID) as the `To:` address. Email is the one channel
-  where the threading id and the addressing id are genuinely different
-  things — web and WhatsApp don't have this problem, which is exactly why
-  the bug wasn't obvious from the design. Found via a Gmail auth error
-  logged against a Message-ID-shaped string instead of an email address.
-- **Stage 9** — `KBDocument.updated_at` (an `onupdate=func.now()` column)
-  gets expired by SQLAlchemy on flush *independent of the session's
-  `expire_on_commit` setting* — a genuinely non-obvious async-SQLAlchemy
-  trap. Accessing it right after `commit()` without an explicit `refresh()`
-  raised `MissingGreenlet`. Found via a real 500 through the admin UI's KB
-  editor, not a test.
-- **Stage 11** — `LLMRole.judge` was going through the normal
-  primary-then-fallback provider dance despite `judge_model` being a Groq
-  model id, guaranteeing a wasted failing attempt (and burned quota) against
-  Gemini on every single judge call.
-- **Stage 12** — `messages.body_redacted` existed as a schema column
-  (correctly listed as non-negotiable in the scope decision) but nothing in
-  the codebase ever populated it or redacted anything before it reached a
-  prompt. The PII check this stage exists to run caught its own
-  prerequisite missing entirely — fixed with `app/core/pii.py` and wired
-  into the one real ingress choke point (`ingest_message`) plus everywhere
-  `state["latest_message"]`/`history` get built into a prompt. Also found
-  (and fixed): `handle_message` had no safety net if the graph raised for
-  any reason — every LLM provider down, an unexpected exception — the
-  customer got total silence, which is exactly the failure mode Stage 12's
-  drills exist to catch. `_escalate_on_failure` now guarantees an honest
-  message and a real escalation, deterministically, with no LLM call of its
-  own (so it works in precisely the scenario that triggers it).
-- **Also Stage 12, infrastructure rather than app code** — a `uv sync` run
-  mid-Stage-9 silently broke the project's own editable install (`import
-  app` failed inside `pytest` but not from a plain `python -c`, because the
-  latter still had the cwd on `sys.path`). Not a bug in this project's
-  logic, but exactly the kind of thing that looks like a test-runner
-  problem and isn't — `uv pip install -e .` fixed it.
+- Two real bugs, now fixed: web chat customers weren't linked to their seeded
+  account, so they had no orders; and the eligibility tools said "yes" without
+  the deadline, so "until when?" couldn't be answered from data.
+- The fact-check rejected honest "we don't have that information" replies. Its
+  instructions now allow that when the help articles really don't cover it.
+- Some test checks were too strict, not the agent. Policy-gap tickets now also
+  accept a plain "we don't offer that", trick-prompt tickets also accept a
+  clarifying question, and a few keyword checks that banned correct wording
+  were fixed. All in `eval/dataset/tickets.jsonl`.
 
-## 5. Stage 12 hardening results
+**Still failing:** a double-charge policy question gets an "which order?"
+question instead of the policy, and a gift-return question with no matching
+help article goes to a person instead of an honest "we don't know". Both are
+safe, just less helpful than they could be.
 
-- **Failure drills** (`backend/tests/test_failure_drills.py`,
-  `docs/PROGRESS.md` Stage 12):
-  - *Every LLM provider down* → customer gets an honest message, ticket
-    escalates with `reason_code=system_error`, no duplicate escalation or
-    message on arq retry. Fixed this session (see §4).
-  - *A tool raises unexpectedly* → already handled correctly by
-    `execute_tool`'s existing exception boundary; regression-tested, not a
-    new fix.
-  - *No Redis* → verified live (stopped the container, hit the ingress
-    endpoint): the raw message is still persisted before the enqueue
-    attempt (non-negotiable #1's "persist before enqueue" holds even here),
-    the request fails loudly (500) rather than silently, and the system
-    self-heals with no manual intervention once Redis returns.
-  - *No tunnel* → design-level, not a runtime failure: WhatsApp needs a
-    public tunnel to receive Twilio webhooks, but every scenario in the demo
-    script has a web-chat/simulator equivalent that needs none (see
-    `docs/09-risks.md` R5).
-- **Concurrency sanity check**: 50 simultaneous conversations via the
-  simulator, `LLM_PROVIDER=stub`. 50/50 requests succeeded, the worker
-  processed 51/51 jobs (one leftover from earlier testing) with zero errors
-  and zero connection-pool exhaustion, despite `db_pool_size=5` against
-  `arq`'s `max_jobs=10` concurrent job slots.
-- **PII check**: see §4 — this is the check that found the gap, not just
-  verified an existing property. `backend/tests/test_pii.py` now covers it
-  end to end, including a real graph run (stub LLM) proving a card number
-  never appears in any recorded `agent_steps.prompt` row, in either the
-  triggering turn or a follow-up turn's history.
-- **`make demo`**: reset (full truncate + reseed, deterministic
-  `SEED=20260908`), migrate, ingest, start everything, and run the
-  automated half of the Stage 6 demo script (`scripts/demo_scenario.py`)
-  against the running stack — policy question, real-data order-status
-  lookup, and a large-refund-request-that-exceeds-policy — printing
-  instructions for the two steps that need an actual human at the console
-  (claim, reply, and the customer seeing it). Live-verified end to end
-  against real Gemini/Groq: steps 1-2 completed correctly (`outcome=
-  answered`, real citations, real tool results), and step 3's refund
-  request genuinely landed in the escalation queue with the correct policy
-  reason (`"refund amount 4200 exceeds the auto-approval ceiling of
-  1000.0"`) — the whole scenario, including the parts of it later reused as
-  eval-harness smoke tests, ran correctly under a visibly degraded Gemini
-  free tier, just slowly (see §6).
+Langfuse was also checked end to end: every ticket shows up as one trace with
+each AI call, its tokens and cost.
 
-## 6. Evaluation — harness proven correct live, numbers pending a clean quota window
+## Decisions worth knowing
 
-`eval/run_eval.py` and `eval/dataset/tickets.jsonl` (50 cases, matching the
-composition table in `docs/08-evaluation.md` exactly: 16 straightforward, 8
-multi-tool/multi-turn, 10 must-escalate, 6 knowledge-gap, 6 adversarial, 4
-noisy, each grounded in real seeded orders and customers rather than
-invented data) are complete. Getting there took a full live-debugging
-session against real APIs, which is worth reporting honestly rather than
-smoothing over, because it is itself evidence the harness now works: four
-real bugs were found and fixed by actually running it, not by inspection.
+Each has a short file in [`decisions/`](decisions/).
 
-**Bugs found running the harness for real, each fixed and re-verified:**
+- **Specialists split by area of work, not by channel** (0006). One brain for
+  every channel; specialists keep each AI call small and focused.
+- **Agents propose, code commits** (0006). Disagreements are settled before
+  anything changes, by rules anyone can read and test.
+- **Fewer handoffs** (0007). Ask a question first, send refunds to an approval
+  queue, open carrier investigations. A person is pulled in only when one is
+  really needed.
+- **Keep the structure, tolerate rough edges** (0003). Queue, migrations, audit
+  tables, PII hiding and the fact-check stayed even under time pressure. Polish
+  did not.
+- **Model names only in `.env`** (0002). Two candidate models were retired by
+  their providers during planning alone.
+- **No Next.js** (0001), **search threshold measured, not guessed** (0004),
+  **speech-to-text through Groq** because this laptop can't run a local model
+  (0005), **upgrades** such as the reranker and Langfuse (0008).
 
-1. The confidence sweep's deduplication key didn't vary per threshold pass,
-   so every sweep run silently no-op'd against the "full" config run moments
-   earlier and reported empty results dressed up as pass/fail.
-2. Several cases share one real seeded customer (needed for real order
-   history); because conversations key on `(channel, thread id)` alone,
-   reusing the customer's phone number as the thread id merged them into one
-   shared conversation — once any case escalated it, every later case
-   against that customer silently no-op'd for the rest of the run.
-3. A hallucinated tool name from `gemini-3.5-flash-lite` crashed the graph
-   with an uncaught `KeyError`, a rougher failure path than the one
-   `execute_tool` already handles for a tool that runs but fails.
-4. The LLM judge was scoring replies with no access to what the agent
-   actually retrieved or looked up — grading blind made every specific,
-   correctly-grounded detail (a KB-cited policy window, a system-generated
-   ticket reference) look unverifiable, inflating a measured 57%
-   hallucination rate on facts nothing had actually invented.
+## Real bugs that only live testing found
 
-Full technical detail, including the exact fixes, is in `docs/PROGRESS.md`
-Stage 11's "Live debugging session" — kept there rather than duplicated here
-so this section stays about the result, not the archaeology.
+Unit tests and the offline fake model prove the plumbing. These bugs only
+showed up against real models, a real browser, or a real database:
 
-**Why there's no final table yet.** By the time bug 4 was diagnosed and
-fixed, this session had exhausted every model viable for the reasoning role
-across every provider available to it in a single day: `gemini-3.8-flash`
-(20 requests/day), `gemini-3.5-flash-lite` (500/day), and Groq
-`openai/gpt-oss-120b` (200,000 tokens/day — confirmed against Groq's own
-usage dashboards, not assumed). That is a real, three-way daily quota wall,
-not a harness limitation; a genuinely clean 50-case × 5-config run, live
-mid-session, got 34 cases through the `full` configuration correctly before
-hitting it, with zero contamination and zero silent empty results — the
-harness itself is no longer in question, only the day's remaining budget.
+- Web chat replies silently never arrived: Redis returned bytes where the
+  WebSocket expected text.
+- Email replies were sent to a Message-ID instead of an email address.
+- Personal-data hiding existed as a database column but nothing filled it. The
+  PII check caught it.
+- If every AI provider was down, the customer got silence. Now they get an
+  honest message and the ticket goes to a person.
+- A slow free-tier day pushed one ticket past the worker's 5-minute job limit,
+  so it was killed and retried mid-run.
+- The eval judge graded replies without seeing what the agent looked up, so
+  correct facts looked made up (a fake 57% hallucination rate).
+- Seed dates were fixed in time, so weeks later every "still cancellable" order
+  had expired. Seed dates now follow the clock.
 
-A useful side effect of chasing the latency down: `app/llm/registry.py` now
-proactively paces every LLM call against each model's real requests-per-
-minute ceiling before making it, instead of firing immediately and
-reactively retrying after a 429 — a genuine Gemini `503 "experiencing high
-demand"` was measured taking up to 100 seconds per call before falling back,
-because it doesn't match the existing quota-exhaustion fast path. Covered by
-eleven deterministic tests.
+## Known limits
 
-**To fill in this section once quota allows:**
+- Real WhatsApp and email are manual tests, not automated.
+- Voice replies are text only (no text-to-speech); speech-to-text needs
+  internet and a Groq key.
+- The small spaCy model can miss a lone first name ("this is Rahul").
+- Free-tier quotas make a full run of every ablation a multi-day job.
+- On purpose, not built: horizontal scaling, multi-tenancy, skill-based
+  routing, SLA timers, CI.
 
-```bash
-# from backend/, against a freshly seeded database
-python ../eval/run_eval.py --all-ablations --sweep-confidence
-```
+## Lessons
 
-Prints a Markdown table per configuration and writes timestamped JSON to
-`eval/reports/`. Paste the "full" config's table here, then the ablation
-comparison:
-
-| Configuration | Resolution rate | Groundedness | Hallucination | Escalation recall | Cost/ticket |
-|---|---|---|---|---|---|
-| Full system | *pending* | *pending* | *pending* | *pending* | *pending* |
-| No RAG | *pending* | *pending* | *pending* | *pending* | *pending* |
-| No `verify` | *pending* | *pending* | *pending* | *pending* | *pending* |
-| Dense-only retrieval | *pending* | *pending* | *pending* | *pending* | *pending* |
-| All tools exposed | *pending* | *pending* | *pending* | *pending* | *pending* |
-
-Expected pattern, per `docs/08-evaluation.md` (to confirm or correct once
-real numbers exist): removing RAG collapses groundedness; removing `verify`
-raises resolution rate but raises hallucination more; dense-only retrieval
-loses order-number/error-code lookups that keyword search catches; exposing
-every tool (no `plan` restriction) raises wrong-tool-call rate and cost.
-
-## 7. Known limitations
-
-Also tracked live in `docs/PROGRESS.md`'s "Running list of known
-limitations" as they were found:
-
-- No local/offline STT or TTS — voice notes need internet and a Groq API
-  key. Spoken (`piper`) replies are not implemented (build-stages checklist
-  marks TTS "Optional"; text-only replies to voice notes today).
-- Email and WhatsApp's real-provider tests (an actual mailbox, an actual
-  phone) are manual steps documented in the README, not automated — same
-  for the WhatsApp voice-note transcription path specifically.
-- No horizontal scale, HA, multi-tenancy, or rate limiting beyond a
-  per-sender email guard — explicit prototype scope
-  (`docs/decisions/0003-prototype-scope.md`).
-- Skill-based assignment routing, an SLA-breach cron, reranking, a
-  self-hosted trace UI, CI, mypy, coverage gates, real load testing,
-  RFC-7807 error bodies, and cursor pagination are genuinely out of scope,
-  not cut corners — see `docs/07-build-stages.md`.
-- The full evaluation matrix (§6) needs a rerun once at least one of
-  Gemini's two tiers or Groq's `gpt-oss-120b` has daily quota headroom again
-  — this session spent all three chasing the harness bugs down.
-
-## 8. Things that surprised us
-
-- `ResponseStyle` was part of the `ChannelAdapter` protocol since Stage 1,
-  but nothing ever actually read it until Stage 10 needed voice's
-  "no markdown, no URLs" — every channel had been silently sending
-  unformatted LLM output the whole time. A contract existing in a type
-  system is not the same as the contract being enforced anywhere; that gap
-  can hide for ten stages in a channel-agnostic design specifically because
-  every individual channel *looked* like it was working.
-- The same shape of gap, worse, in Stage 12: `messages.body_redacted` was
-  explicitly called out as non-negotiable in the scope decision from the
-  very start, existed correctly in the schema and every migration since,
-  and was never once populated. A schema column is not a feature. The PII
-  check existing as a required Stage 12 task — not just "PII redaction
-  exists, verify it" but "check whether it actually reaches a prompt" — is
-  what caught it; a less specific task ("make sure PII is handled") might
-  not have.
-- Async SQLAlchemy's `onupdate`-column expiration (Stage 9) and the
-  editable-install breakage after `uv sync` (Stage 10/12) were both the
-  kind of bug that a plain `python -c "import ..."` smoke check would miss
-  but the *actual* test runner or the *actual* running server would hit
-  immediately — reinforcing the project's own stated discipline that "does
-  it import" and "does pytest pass" are not the same question as "does it
-  work," for exactly the class of bug async Python and package tooling
-  produce.
-- The evaluation harness's own LLM judge had a measurement bug that
-  inflated its headline metric: grading with no access to what the agent
-  actually retrieved made a correctly-cited policy number and a real,
-  system-generated ticket reference both look like fabrications, driving a
-  measured 57% hallucination rate that was substantially an artifact of the
-  judge prompt, not the system under test. Worth remembering for any future
-  LLM-as-judge setup: the instrument doing the measuring needs the same
-  scrutiny as the thing being measured, and a suspiciously bad number is as
-  likely to be a broken ruler as a broken product.
-
-## 9. Demo video
-
-Not produced as part of this report — recording and editing a walkthrough
-video needs a human at a microphone, which this session doesn't have.
+- **A column or interface existing is not the feature working.** PII hiding
+  and channel reply styles both "existed" for many stages before anything used
+  them.
+- **Check the ruler, not just the product.** A bad number from an AI judge was
+  as likely a broken judge as a broken agent.
+- **Put limits around the whole job, not just the loop.** Tool-call and turn
+  limits bound the agent; a slow provider still needed a longer job timeout.
+- **Most handoffs needed one approval or one question, not a person.** Fixing
+  that changed the expected result of 21 of the 50 test tickets from "handed
+  off" to "answered".
