@@ -2,13 +2,28 @@
 
 from arq import cron
 
+from app.agent.checkpoint import close_checkpointer, get_checkpointer
 from app.workers.email_poll import poll_inbox_job
 from app.workers.queue import _redis_settings
 from app.workers.tasks import handle_message
 
 
+async def startup(ctx: dict) -> None:
+    # Create the checkpoint tables before any job runs. Left to the first
+    # job, .setup()'s CREATE INDEX CONCURRENTLY waits for every open
+    # transaction - including that job's own agent_runs insert - and the
+    # first message on a fresh database hangs forever.
+    await get_checkpointer()
+
+
+async def shutdown(ctx: dict) -> None:
+    await close_checkpointer()
+
+
 class WorkerSettings:
     functions = [handle_message]
+    on_startup = startup
+    on_shutdown = shutdown
     # Every 30s (:00 and :30) - fresh enough for email. poll_inbox_job itself
     # no-ops immediately if EMAIL_ENABLED is false, so running this cron
     # unconditionally costs nothing when email isn't configured.
