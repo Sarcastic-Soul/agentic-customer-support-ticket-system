@@ -1,4 +1,5 @@
-.PHONY: up down migrate seed ingest dev api worker frontend demo eval test lint docker-up docker-down
+.PHONY: up down migrate seed ingest dev api worker frontend demo eval test lint docker-up docker-down \
+	langfuse langfuse-down promptfoo e2e
 
 BACKEND=cd backend && . .venv/bin/activate &&
 
@@ -56,8 +57,18 @@ demo:
 eval:
 	$(BACKEND) python ../eval/run_eval.py $(ARGS)
 
+# Prompt regression checks (eval/promptfoo/) - classify and verify prompts
+# against fixed cases, through the same app/llm/registry.py the agent uses.
+promptfoo:
+	$(BACKEND) python ../eval/promptfoo/build_tests.py
+	cd eval/promptfoo && npx --yes promptfoo@latest eval -c promptfooconfig.yaml
+
 test:
 	$(BACKEND) pytest
+
+# Browser tests (frontend/e2e/) against the vite dev server with a mocked API.
+e2e:
+	cd frontend && pnpm exec playwright test
 
 lint:
 	$(BACKEND) ruff check app
@@ -73,3 +84,10 @@ docker-up:
 
 docker-down:
 	docker compose --profile app down
+
+# Self-hosted Langfuse on :3001 for tracing - see docker-compose.langfuse.yml.
+langfuse:
+	docker compose -f docker-compose.langfuse.yml -p langfuse up -d
+
+langfuse-down:
+	docker compose -f docker-compose.langfuse.yml -p langfuse down

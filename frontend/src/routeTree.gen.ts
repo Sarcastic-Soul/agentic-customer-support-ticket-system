@@ -18,6 +18,7 @@ import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminKbRouteImport } from './routes/admin.kb'
 import { Route as AdminMetricsRouteImport } from './routes/admin.metrics'
 import { Route as AdminTicketsRouteImport } from './routes/admin.tickets'
+import { Route as ConsoleApprovalsRouteImport } from './routes/console_.approvals'
 import { Route as AdminTicketsIndexRouteImport } from './routes/admin.tickets.index'
 import { Route as AdminTicketsTicketIdRouteImport } from './routes/admin.tickets.$ticketId'
 
@@ -66,6 +67,11 @@ const AdminTicketsRoute = AdminTicketsRouteImport.update({
   path: '/tickets',
   getParentRoute: () => AdminRoute,
 } as any)
+const ConsoleApprovalsRoute = ConsoleApprovalsRouteImport.update({
+  id: '/console_/approvals',
+  path: '/console/approvals',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminTicketsIndexRoute = AdminTicketsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -86,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/admin/kb': typeof AdminKbRoute
   '/admin/metrics': typeof AdminMetricsRoute
   '/admin/tickets': typeof AdminTicketsRouteWithChildren
+  '/console/approvals': typeof ConsoleApprovalsRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
   '/admin/tickets/': typeof AdminTicketsIndexRoute
@@ -97,6 +104,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/admin/kb': typeof AdminKbRoute
   '/admin/metrics': typeof AdminMetricsRoute
+  '/console/approvals': typeof ConsoleApprovalsRoute
   '/admin': typeof AdminIndexRoute
   '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
   '/admin/tickets': typeof AdminTicketsIndexRoute
@@ -111,6 +119,7 @@ export interface FileRoutesById {
   '/admin/kb': typeof AdminKbRoute
   '/admin/metrics': typeof AdminMetricsRoute
   '/admin/tickets': typeof AdminTicketsRouteWithChildren
+  '/console_/approvals': typeof ConsoleApprovalsRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/tickets/$ticketId': typeof AdminTicketsTicketIdRoute
   '/admin/tickets/': typeof AdminTicketsIndexRoute
@@ -126,6 +135,7 @@ export interface FileRouteTypes {
     | '/admin/kb'
     | '/admin/metrics'
     | '/admin/tickets'
+    | '/console/approvals'
     | '/admin/'
     | '/admin/tickets/$ticketId'
     | '/admin/tickets/'
@@ -137,6 +147,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/admin/kb'
     | '/admin/metrics'
+    | '/console/approvals'
     | '/admin'
     | '/admin/tickets/$ticketId'
     | '/admin/tickets'
@@ -150,6 +161,7 @@ export interface FileRouteTypes {
     | '/admin/kb'
     | '/admin/metrics'
     | '/admin/tickets'
+    | '/console_/approvals'
     | '/admin/'
     | '/admin/tickets/$ticketId'
     | '/admin/tickets/'
@@ -161,6 +173,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRoute
   ConsoleRoute: typeof ConsoleRoute
   LoginRoute: typeof LoginRoute
+  ConsoleApprovalsRoute: typeof ConsoleApprovalsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -228,6 +241,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminTicketsRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/console_/approvals': {
+      id: '/console_/approvals'
+      path: '/console/approvals'
+      fullPath: '/console/approvals'
+      preLoaderRoute: typeof ConsoleApprovalsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/tickets/': {
       id: '/admin/tickets/'
       path: '/'
@@ -281,6 +301,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRoute,
   ConsoleRoute: ConsoleRoute,
   LoginRoute: LoginRoute,
+  ConsoleApprovalsRoute: ConsoleApprovalsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -50,6 +50,21 @@ class Settings(BaseSettings):
 
     llm_timeout_seconds: int = 30
     llm_max_retries: int = 3
+    # Redis cache of LLM responses keyed on (provider, model, prompt, tools,
+    # schema). Off in production - meant for eval reruns and demos, where
+    # the same prompt repeats and free-tier quota is the bottleneck.
+    llm_cache_enabled: bool = False
+    llm_cache_ttl_seconds: int = 7 * 24 * 3600
+
+    # tracing (Langfuse, self-hosted or cloud) - off unless both keys are set
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "http://localhost:3001"
+
+    # PII redaction: "presidio" (spaCy NER + pattern recognizers) or "regex"
+    # (the original card/OTP rules only, no model load)
+    pii_engine: str = "presidio"
+    pii_spacy_model: str = "en_core_web_sm"
 
     # embeddings
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -60,7 +75,11 @@ class Settings(BaseSettings):
     retrieval_top_k_sparse: int = 20
     retrieval_final_k: int = 5
     retrieval_score_min: float = 0.55
-    reranker_enabled: bool = False
+    # flashrank cross-encoder over the fused candidates (app/rag/rerank.py).
+    # Falls back to plain RRF order if the model can't load.
+    reranker_enabled: bool = True
+    reranker_model: str = "ms-marco-TinyBERT-L-2-v2"
+    reranker_candidates: int = 20  # fused hits passed to the reranker
 
     # agent policy
     intent_confidence_min: float = 0.60
@@ -68,6 +87,10 @@ class Settings(BaseSettings):
     max_tool_calls: int = 5
     auto_refund_ceiling: float = 1000.00
     auto_cancel_max_age_hours: int = 24
+    investigation_wait_hours: int = 24  # after a "delivered" scan
+    investigation_stuck_days: int = 3  # past the promised date, still not delivered
+    max_clarifications: int = 2  # clarifying questions in a row before a handoff
+    max_verify_repairs: int = 2
     conversation_idle_hours: int = 24
 
     # whatsapp
@@ -98,7 +121,8 @@ class Settings(BaseSettings):
 
     # eval ablations (Stage 11) - None in production; the eval harness sets
     # this per run to knock out one piece of the pipeline at a time.
-    eval_ablation: str | None = None  # no_rag | no_verify | dense_only | all_tools
+    # no_rag | no_verify | dense_only | all_tools | single_agent | no_rerank
+    eval_ablation: str | None = None
 
 
 settings = Settings()

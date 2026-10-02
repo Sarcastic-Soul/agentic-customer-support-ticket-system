@@ -23,6 +23,7 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel
 
 from app.config import settings
+from app.llm.cache import cache_active, cache_get, cache_key, cache_put
 from app.llm.roles import LLMRole
 from app.llm.stub import StubChatModel
 from app.logging import get_logger
@@ -110,6 +111,35 @@ class LLMOutcome:
     latency_ms: int
     attempts: int
     tool_calls: list[dict] = field(default_factory=list)
+    cached: bool = False  # served from the Redis LLM cache (app/llm/cache.py)
+
+
+def _to_cache(outcome: LLMOutcome) -> dict:
+    return {
+        "text": outcome.text,
+        "structured": outcome.structured.model_dump(mode="json") if outcome.structured else None,
+        "tool_calls": outcome.tool_calls,
+        "tokens_in": outcome.tokens_in,
+        "tokens_out": outcome.tokens_out,
+    }
+
+
+def _from_cache(
+    hit: dict, provider: str, model: str, structured: type[BaseModel] | None
+) -> LLMOutcome:
+    parsed = hit.get("structured")
+    return LLMOutcome(
+        text=hit.get("text"),
+        structured=structured.model_validate(parsed) if structured and parsed else None,
+        provider=provider,
+        model=model,
+        tokens_in=hit.get("tokens_in", 0),
+        tokens_out=hit.get("tokens_out", 0),
+        latency_ms=0,
+        attempts=0,
+        tool_calls=hit.get("tool_calls") or [],
+        cached=True,
+    )
 
 
 class AllProvidersFailedError(RuntimeError):
@@ -169,6 +199,22 @@ def _is_quota_exhausted(exc: Exception) -> bool:
     return any(marker in text for marker in _QUOTA_MARKERS)
 
 
+_AUTH_MARKERS = (
+    "invalid_api_key", "invalid api key", "api key not valid", "api_key_invalid",
+    "401", "permission_denied", "unauthenticated",
+)
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """A bad or missing API key fails the same way every time - retrying
+    only adds backoff sleeps. Same string-matching trade-off as
+    _is_quota_exhausted. Found in the first real eval smoke run: an invalid
+    Groq key cost three retries and ~6s on every judge call.
+    """
+    text = str(exc).lower()
+    return any(marker in text for marker in _AUTH_MARKERS)
+
+
 def _usage(message: AIMessage) -> tuple[int, int]:
     usage = getattr(message, "usage_metadata", None)
     if not usage:
@@ -211,6 +257,16 @@ class LLMClient:
         attempts = 0
 
         for provider, model in self._candidates:
+            key = None
+            if cache_active(provider):
+                key = cache_key(provider, model, prompt, structured=structured, tools=tools)
+                hit = await cache_get(key)
+                if hit is not None:
+                    try:
+                        return _from_cache(hit, provider, model, structured)
+                    except Exception:  # noqa: BLE001 - stale shape after a schema change
+                        logger.warning("llm_cache_hit_unusable", role=self.role)
+
             for attempt in range(settings.llm_max_retries):
                 attempts += 1
                 await _rate_limiter.wait(provider, model)
@@ -227,7 +283,7 @@ class LLMClient:
                             raise result["parsing_error"]
                         raw_message: AIMessage = result["raw"]
                         tokens_in, tokens_out = _usage(raw_message)
-                        return LLMOutcome(
+                        outcome = LLMOutcome(
                             text=None,
                             structured=result["parsed"],
                             provider=provider,
@@ -237,24 +293,28 @@ class LLMClient:
                             latency_ms=int((time.monotonic() - start) * 1000),
                             attempts=attempts,
                         )
-
-                    message = await chat.ainvoke(prompt)
-                    tokens_in, tokens_out = _usage(message)
-                    return LLMOutcome(
-                        text=_extract_text(message.content),
-                        structured=None,
-                        provider=provider,
-                        model=model,
-                        tokens_in=tokens_in,
-                        tokens_out=tokens_out,
-                        latency_ms=int((time.monotonic() - start) * 1000),
-                        attempts=attempts,
-                        tool_calls=list(getattr(message, "tool_calls", []) or []),
-                    )
+                    else:
+                        message = await chat.ainvoke(prompt)
+                        tokens_in, tokens_out = _usage(message)
+                        outcome = LLMOutcome(
+                            text=_extract_text(message.content),
+                            structured=None,
+                            provider=provider,
+                            model=model,
+                            tokens_in=tokens_in,
+                            tokens_out=tokens_out,
+                            latency_ms=int((time.monotonic() - start) * 1000),
+                            attempts=attempts,
+                            tool_calls=list(getattr(message, "tool_calls", []) or []),
+                        )
+                    if key is not None:
+                        await cache_put(key, _to_cache(outcome))
+                    return outcome
 
                 except Exception as exc:  # noqa: BLE001 - genuinely any provider failure retries
                     errors.append(exc)
                     exhausted = _is_quota_exhausted(exc)
+                    auth_failed = _is_auth_error(exc)
                     logger.warning(
                         "llm_call_failed",
                         role=self.role,
@@ -263,7 +323,10 @@ class LLMClient:
                         attempt=attempt + 1,
                         error=str(exc),
                         quota_exhausted=exhausted,
+                        auth_failed=auth_failed,
                     )
+                    if auth_failed:
+                        break  # a bad key won't fix itself - try the next provider
                     if exhausted:
                         # A quota/rate-limit error will not clear on retry
                         # within the seconds this request has to live -

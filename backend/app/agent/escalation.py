@@ -30,13 +30,20 @@ REASON_DETAIL = {
         "A requested action was denied by policy and requires human approval."
     ),
     "knowledge_gap": "The knowledge base and available tools don't cover this question.",
-    "ungrounded_answer": "The AI's draft reply failed a groundedness check twice.",
+    "ungrounded_answer": (
+        "The AI's draft reply failed a groundedness check after every repair attempt."
+    ),
+    "agent_conflict": (
+        "Two AI specialists proposed actions on the same order that no conflict rule "
+        "settles. Nothing was changed - see the proposals below and pick one."
+    ),
 }
 
 REQUIRED_SKILL = {
     "policy_limit_exceeded": "refunds",
     "knowledge_gap": None,
     "ungrounded_answer": None,
+    "agent_conflict": None,
 }
 
 
@@ -66,6 +73,12 @@ async def build_handoff_packet(
         timeline.append({"who": "ai", "what": f"Called {r['tool']}({r['args']}) -> {r['result']}"})
     if state.get("draft"):
         timeline.append({"who": "ai", "what": f"Drafted (not sent): {state['draft']}"})
+    for c in state.get("conflicts") or []:
+        timeline.append({
+            "who": "system",
+            "what": f"Conflict ({c['kind']}, {c['subject']}): {c['detail']} "
+            f"Rule {c['rule']} -> {c['resolution']}.",
+        })
     timeline.append({"who": "system", "what": f"Escalated: {reason_detail}"})
 
     entities: dict[str, str] = {}
@@ -92,6 +105,8 @@ async def build_handoff_packet(
         "timeline": timeline,
         "entities": entities,
         "suggested_reply": state.get("draft"),
+        "specialists": state.get("specialists") or [],
+        "agent_conflicts": state.get("conflicts") or [],
         "ai_confidence": state.get("intent_confidence"),
         "intent": state.get("intent"),
         "generated_at": datetime.now(UTC).isoformat(),

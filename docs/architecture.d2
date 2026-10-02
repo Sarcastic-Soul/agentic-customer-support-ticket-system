@@ -1,0 +1,163 @@
+# Architecture diagram. Render with:
+#   d2 docs/architecture.d2 docs/architecture.svg
+# Theme 302 is D2's "Origami" theme.
+#
+# Return paths (replies, resume, repair) are written as `a <- b` so the ELK
+# layout still ranks the diagram top to bottom in the order a message travels.
+
+vars: {
+  d2-config: {
+    theme-id: 302
+    layout-engine: elk
+    pad: 40
+  }
+}
+
+direction: down
+
+title: |md
+  # AI Customer Support: architecture
+  One channel-agnostic LangGraph brain, many channel mouths
+| {near: top-center}
+
+customer: Customer {shape: person}
+
+frontend: Frontend (Vite + React) {
+  chat: Customer chat
+  consoleui: Agent console
+  admin: Admin: tickets, KB, metrics
+}
+
+scheduler: scheduler process (arq cron) {
+  imap: IMAP poll
+  sweep: Stale-ticket sweep
+}
+
+channels: Channel adapters (no LLM) {
+  web: Web chat\n(WebSocket)
+  whatsapp: WhatsApp\n(Twilio webhook)
+  email: Email\n(IMAP poll / SMTP)
+  voice: Voice notes\n(STT via Groq Whisper)
+}
+
+api: api process (FastAPI) {
+  direction: right
+  ingress: Ingress gateway {
+    direction: right
+    norm: Normalize to\nInboundMessage
+    dedupe: Dedupe\nUNIQUE(channel, external_message_id)
+    raw: Persist raw_events
+    ack: Ack fast\n(no LLM in handler)
+    norm -> dedupe -> raw -> ack
+  }
+  core: Conversation core (deterministic) {
+    direction: right
+    ident: Identity resolution
+    thread: Thread continuity
+    tsm: Ticket state machine
+    pii: PII redaction\nmessages.body_redacted
+    ident -> thread -> tsm -> pii
+  }
+  ingress.raw -> core.ident
+}
+
+redis: Redis\nqueue, locks, pub/sub {shape: cylinder}
+
+worker: worker process (arq) {
+  graph: LangGraph StateGraph {
+    prepare
+    classify
+    hard_route: hard_route {shape: diamond}
+    supervisor
+    retrieve: retrieve\n(hybrid RAG)
+    specialists: Specialists x1-2 (parallel) {
+      orders
+      logistics
+      payments
+    }
+    reconcile: reconcile\npolicy/conflicts.py {shape: diamond}
+    commit
+    answer
+    verify: verify\ngroundedness gate {shape: diamond}
+    escalate: escalate\ninterrupt()
+    respond
+
+    prepare -> classify -> hard_route
+    hard_route -> supervisor: normal
+    hard_route -> answer: clarify
+    hard_route -> escalate: hard trigger
+    supervisor -> retrieve -> specialists -> reconcile
+    reconcile -> commit: proposals survive
+    reconcile -> escalate: conflict
+    commit -> answer -> verify
+    verify -> respond: grounded
+    verify -> escalate: not grounded
+    answer <- verify: repair {style.stroke-dash: 3}
+    answer <- escalate: resume with\nhuman note {style.stroke-dash: 3}
+  }
+  bounds: MAX_TOOL_CALLS = 5\nMAX_AI_TURNS = 4 {shape: page}
+}
+
+hil: Human in the loop {
+  queue: Escalation queue\nFOR UPDATE SKIP LOCKED
+  packet: Handoff packet
+  console: Agent console {shape: person}
+  queue -> packet -> console
+}
+
+tools: Tool layer (typed, customer-scoped) {
+  ctx: ToolContext\ncustomer_id from trusted state {shape: page}
+  order_tools: Order tools
+  logistics_tools: Logistics tools
+  txn_tools: Transaction tools
+  auth: policy/authorize()\nAllow | RequireHuman | Deny {shape: hexagon}
+  order_tools -> auth
+  txn_tools -> auth
+  logistics_tools -> auth
+}
+
+llm: LLM registry {
+  primary: Gemini
+  fallback: Groq\ngpt-oss-120b
+  primary -> fallback: on repeated failure {style.stroke-dash: 3}
+}
+
+pg: |md
+  **PostgreSQL 18 + pgvector**
+  - tickets, messages, raw_events
+  - orders, refunds, shipments
+  - kb chunks (vectors)
+  - agent_runs, agent_steps, tool_calls
+  - LangGraph checkpoints
+| {shape: cylinder}
+
+eval: Eval harness\neval/run_eval.py {shape: page}
+
+# Inbound path
+customer -> channels: writes in
+frontend.chat -> channels.web
+scheduler.imap -> channels.email
+channels -> api.ingress.norm: payload
+api.core.pii -> redis: enqueue handle_message
+redis -> worker.graph.prepare: worker picks up
+
+# Agent work
+worker.graph.specialists -> tools: tool calls
+worker.graph.commit -> tools: approved writes
+worker.graph -> llm: classify, specialists,\nanswer, verify
+worker.graph.retrieve -> pg: vector + keyword search
+tools -> pg: scoped reads / writes
+worker.graph -> pg: checkpoints + traces {style.stroke-dash: 3}
+
+# Escalation
+worker.graph.escalate -> hil.queue: handoff
+worker.graph.escalate <- hil.console: resolve or\nreturn to AI {style.stroke-dash: 3}
+frontend.consoleui <- hil.console {style.stroke-dash: 3}
+
+# Return path
+channels <- worker.graph.respond: OutboundMessage
+channels <- hil.console: human reply
+customer <- channels: reply
+frontend.admin <- redis: live updates {style.stroke-dash: 3}
+
+eval -> pg: grades runs

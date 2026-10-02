@@ -143,3 +143,19 @@ async def test_execute_tool_records_tool_call_row(session):
     assert logged.tool_name == "get_order"
     assert logged.authorized is True
     assert logged.result["order_number"] == order.order_number
+
+
+async def test_propose_only_cancellation_leaves_order_unchanged(session):
+    # Specialists run write tools in propose mode; reconcile decides, and
+    # only commit changes the order.
+    customer = await _make_customer(session, "cancel-propose")
+    order = await _make_order(
+        session, customer, cancellable_until=datetime.now(UTC) + timedelta(hours=2)
+    )
+    ctx = ToolContext(
+        session=session, customer_id=customer.id, ticket_id=0, run_id=0, propose_only=True
+    )
+    result = await request_cancellation(ctx, order.order_number, "placed by mistake")
+
+    assert result["proposed"] is True
+    assert order.status == "placed"

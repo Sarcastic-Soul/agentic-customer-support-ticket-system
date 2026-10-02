@@ -16,6 +16,10 @@ Rules:
   customer's specific order/payment/account data (not just general policy).
 - If nothing above fits, use "unknown" with low confidence rather than
   guessing.
+- secondary_intent: if the message clearly asks for a second, different
+  thing (e.g. "where is my order, and I was charged twice" is
+  delivery_issue + billing_dispute), put the second intent here from the
+  same list. Otherwise null. Don't invent one.
 
 Conversation so far:
 {history}

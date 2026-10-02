@@ -8,6 +8,23 @@ export type ChatMessage = {
 
 type ConnectionStatus = "connecting" | "open" | "closed";
 
+/** What the agent is doing right now, sent by the worker while it works.
+ * The reply itself is never streamed token by token: it is only sent after
+ * the verify groundedness check, so it arrives whole in one "reply" frame. */
+export type AgentProgress = {
+  stage: string;
+  agent: string | null;
+  label: string;
+};
+
+type Frame =
+  | { type: "progress"; stage: string; agent?: string | null; label: string }
+  | { type?: "reply"; text: string };
+
+// A run that goes quiet this long has stalled or been handed to a person -
+// stop showing a stale "Checking your order".
+const PROGRESS_IDLE_MS = 30_000;
+
 /** Owns the WebSocket connection to /channels/web/ws. Reconnects with a
  * short fixed backoff if the connection drops - good enough for a prototype
  * chat widget, not a general-purpose reconnection library.
@@ -18,39 +35,68 @@ type ConnectionStatus = "connecting" | "open" | "closed";
 export function useWebChat(sessionId: string, history: ChatMessage[] = []) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => history);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const [progress, setProgress] = useState<AgentProgress | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    let socket: WebSocket;
+
+    function clearIdle() {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      idleTimer.current = null;
+    }
 
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      socket = new WebSocket(
+      const socket = new WebSocket(
         `${protocol}://${window.location.host}/channels/web/ws?session_id=${encodeURIComponent(sessionId)}`,
       );
       socketRef.current = socket;
       setStatus("connecting");
+      clearIdle();
+      setProgress(null);
 
       socket.onopen = () => setStatus("open");
 
       socket.onmessage = (event) => {
-        const data = JSON.parse(event.data) as { text: string };
+        let frame: Frame;
+        try {
+          frame = JSON.parse(event.data) as Frame;
+        } catch {
+          return;
+        }
+        if (frame.type === "progress") {
+          setProgress({ stage: frame.stage, agent: frame.agent ?? null, label: frame.label });
+          clearIdle();
+          idleTimer.current = setTimeout(() => setProgress(null), PROGRESS_IDLE_MS);
+          return;
+        }
+        // Frames with no "type" are the pre-progress reply shape.
+        if (typeof frame.text !== "string") return;
+        clearIdle();
+        setProgress(null);
         setMessages((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: "assistant", text: data.text },
+          { id: crypto.randomUUID(), role: "assistant", text: frame.text },
         ]);
       };
 
       socket.onclose = () => {
+        // A socket closed by cleanup (StrictMode remount, session change) can
+        // report its close after the new socket has opened - ignore it.
+        if (cancelled) return;
         setStatus("closed");
-        if (!cancelled) setTimeout(connect, 1500);
+        setTimeout(() => {
+          if (!cancelled) connect();
+        }, 1500);
       };
     }
 
     connect();
     return () => {
       cancelled = true;
+      clearIdle();
       socketRef.current?.close();
     };
   }, [sessionId]);
@@ -85,5 +131,5 @@ export function useWebChat(sessionId: string, history: ChatMessage[] = []) {
     [sessionId],
   );
 
-  return { messages, status, sendMessage, sendVoiceNote };
+  return { messages, status, progress, sendMessage, sendVoiceNote };
 }

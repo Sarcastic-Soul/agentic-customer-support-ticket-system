@@ -17,7 +17,7 @@ reasoning.
 | `customer_requested_human` | Message matches human-request patterns ("talk to a person", "agent", "representative", "supervisor"). |
 | `abusive_or_distress` | Abuse, threats, or self-harm signals. Never let a model improvise here. |
 | `legal_or_regulatory` | Keywords: chargeback, consumer court, legal notice, fraud, police, GDPR/data deletion. |
-| `policy_limit_exceeded` | A write tool was denied by `policy.authorize` (see limits below). |
+| `policy_limit_exceeded` | Kept as a code, but refunds no longer fire it: a refund `authorize()` won't approve goes to the approval queue instead (`decisions/0007-fewer-handoffs.md`). |
 | `high_value_customer` | `customer.tier == 'priority'` **and** `sentiment in (negative, angry)`. |
 | `already_escalated` | Ticket has an open escalation; new messages route to the owning human. |
 | `repeat_contact` | Third ticket from this customer about the same order within 7 days. |
@@ -28,9 +28,10 @@ reasoning.
 
 | Code | Condition |
 |---|---|
-| `low_intent_confidence` | `intent_confidence < 0.60`, or `intent == unknown`. |
-| `knowledge_gap` | Retrieval returned nothing above the score threshold for a knowledge-shaped intent. Logged separately as a KB backlog item. |
-| `ungrounded_answer` | `verify.grounded == false` after one repair attempt. |
+| `low_intent_confidence` | `intent_confidence < 0.60` after the agent has already asked `max_clarifications` (2) clarifying questions in a row. |
+| `knowledge_gap` | Nothing found to answer from, after 2 clarifying questions in a row. Logged separately as a KB backlog item. |
+| `ungrounded_answer` | `verify.grounded == false` after two repair attempts. |
+| `agent_conflict` | Two specialists proposed actions on one order that no rule in `policy/conflicts.py` settles. |
 | `turn_budget_exceeded` | `turn_index >= 4` with the ticket still unresolved. |
 | `negative_sentiment_trend` | Sentiment worsened across two consecutive turns. |
 | `tool_repeated_failure` | Same tool failed twice in one run. |
@@ -63,13 +64,16 @@ def authorize(action: Action, ctx: ToolContext) -> Decision:
 | Explain policy from KB | yes | — | invent policy |
 | Cancel order | yes, if `now < cancellable_until` and not shipped | shipped, or past window | after delivery |
 | Initiate return | yes, if within `return_window_ends` and item `returnable` | outside window, or damaged-goods claim | non-returnable SKUs |
-| Refund | yes, if amount <= `AUTO_REFUND_CEILING` and a matching failed/duplicate payment exists | any larger amount, any goodwill refund, any dispute | issue without a linked transaction |
+| Refund | yes, if amount <= `AUTO_REFUND_CEILING` and a matching failed/duplicate payment exists | any larger amount, any goodwill refund: recorded as `requested` for one-click approval in the console queue | issue without a linked transaction; a second refund on one payment |
+| Carrier investigation | yes, 24h after a delivery scan, or more than 3 days past the promised date | — | before the waiting period |
 | Change address / contact | no | yes | — |
 | Account deletion, plan change | no | yes | — |
 | Promise a delivery date | only a date returned by `track_shipment` | — | estimate one |
 
 The model cannot bypass this: `authorize` is called inside the tool wrapper, and
-a `Deny` result becomes a structured tool error plus an automatic escalation.
+a `Deny` result becomes a structured tool result the reply explains, with the
+alternatives the data allows. A denial alone no longer escalates
+(`decisions/0007-fewer-handoffs.md`).
 
 ## Priority and SLA
 
@@ -155,6 +159,22 @@ or the entity list — those must be facts.
 5. **Resolve.** Sets `human_resolved`, prompts for a one-line resolution summary,
    and offers "save as knowledge-base article" when the reason was
    `knowledge_gap` — this closes the improvement loop and is a strong demo moment.
+
+## Refund approval queue
+
+Most "needs a human" refunds need a yes or no, not a person to take over the
+chat. The AI records them as `refunds.status = 'requested'`, tells the customer
+the refund is waiting for approval, and keeps the ticket.
+
+- `GET  /api/console/approvals`: refunds waiting for approval, with customer,
+  order, payment amount and reason.
+- `POST /api/console/approvals/{id}/approve`: marks it `approved`, sets
+  `expected_credit_by` to 7 days out, and messages the customer.
+- `POST /api/console/approvals/{id}/reject` with `{"note": ...}`: marks it
+  `rejected` and messages the customer with the note.
+
+Both write a `ticket_events` row. `authorize()` is unchanged; only what
+happens after a `RequireHuman` changed.
 
 ## Resume mechanics
 

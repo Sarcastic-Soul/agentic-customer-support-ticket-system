@@ -54,6 +54,10 @@ export type ToolCallOut = {
 export type AgentStepOut = {
   ordinal: number;
   node: string;
+  /** Specialist that ran this step: "orders" | "logistics" | "payments" |
+   * "knowledge". null/absent for shared nodes (classify, supervisor,
+   * verify...). Older runs predate specialists and never set it. */
+  agent?: string | null;
   model: string | null;
   output: Record<string, unknown> | null;
   tokens_in: number | null;
@@ -76,6 +80,29 @@ export type AgentRunOut = {
   started_at: string;
   finished_at: string | null;
   steps: AgentStepOut[];
+  /** Specialists dispatched this run, in dispatch order. */
+  specialists?: string[];
+  conflicts?: ConflictOut[];
+};
+
+/** One disagreement between specialists and how it was settled. */
+export type ConflictOut = {
+  kind: "action" | "fact" | "duplicate";
+  agents: string[];
+  subject: string;
+  detail: string;
+  resolution: "rule" | "escalated";
+  rule: string;
+  kept: string | null;
+  dropped: string[];
+};
+
+export type AgentMetric = {
+  agent: string;
+  runs: number;
+  tool_calls: number;
+  denied: number;
+  conflicts: number;
 };
 
 export type MetricsOverview = {
@@ -157,6 +184,9 @@ export const adminApi = {
 
   metricsEscalations: (rangeDays: number) =>
     request<EscalationMetric[]>(`/api/admin/metrics/escalations?range=${rangeDays}`),
+
+  metricsAgents: (rangeDays: number) =>
+    request<AgentMetric[]>(`/api/admin/metrics/agents?range=${rangeDays}`),
 
   kbList: () => request<KBDocumentSummary[]>(`/api/admin/kb/documents`),
 

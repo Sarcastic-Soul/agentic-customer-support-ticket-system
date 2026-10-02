@@ -224,7 +224,12 @@ async def run_case(case: dict, *, run_tag: str) -> dict:
             "ticket_id": ticket_id,
             "actual_intent": ticket.intent if ticket else None,
             "actual_outcome": actual_outcome,
-            "actual_tools": [t["tool"] for t in (final_state or {}).get("tool_results", [])],
+            # proposals reconcile dropped and its own notes aren't tool calls
+            # that happened
+            "actual_tools": [
+                t["tool"] for t in (final_state or {}).get("tool_results", [])
+                if t["tool"] != "reconcile" and not t["result"].get("skipped")
+            ],
             "reply_text": reply.body if reply else "",
             "citations": (final_state or {}).get("citations", []),
             # Ground truth for judge_case() - without these the judge grades
@@ -401,7 +406,10 @@ def summarize(rows: list[dict]) -> dict:
         "outcome_accuracy": rate(lambda r: r["scores"]["outcome_correct"]),
         "ai_resolution_rate": (
             round(
-                sum(1 for r in non_escalate_cases if r["result"]["actual_outcome"] == "answered")
+                sum(
+                    1 for r in non_escalate_cases
+                    if r["result"]["actual_outcome"] in ("answered", "clarified")
+                )
                 / len(non_escalate_cases),
                 3,
             )
@@ -409,6 +417,9 @@ def summarize(rows: list[dict]) -> dict:
         ),
         "escalation_recall": escalation_recall,
         "escalation_precision": escalation_precision,
+        # the headline number for "does the AI take work off humans": share
+        # of every case that ended with a human
+        "escalation_rate": round(len(predicted_escalated) / n, 3) if n else None,
         "hallucination_rate": hallucination_rate,
         "groundedness": groundedness,
         "judge_correctness": correctness,
@@ -430,7 +441,9 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
-        "--ablation", choices=["no_rag", "no_verify", "dense_only", "all_tools"], default=None
+        "--ablation",
+        choices=["no_rag", "no_verify", "dense_only", "all_tools", "single_agent", "no_rerank"],
+        default=None,
     )
     parser.add_argument("--all-ablations", action="store_true")
     parser.add_argument("--sweep-confidence", action="store_true")
@@ -440,7 +453,16 @@ async def main() -> None:
         "--sweep-only", action="store_true",
         help="skip the config loop (full/ablations) - just run --sweep-confidence",
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="call the models every time instead of reusing cached replies "
+        "(use for latency numbers - cache hits report 0ms)",
+    )
     args = parser.parse_args()
+
+    # Re-runs only spend quota on calls whose prompt actually changed
+    # (app/llm/cache.py). Off for live traffic, on here.
+    settings.llm_cache_enabled = not args.no_cache
 
     cases = load_cases()
     if args.bucket:
@@ -452,6 +474,7 @@ async def main() -> None:
     print(f"Model ids: reason={settings.model_reason} (fallback {settings.fallback_model_reason}), "
           f"classify={settings.model_classify}, verify={settings.model_verify}, "
           f"judge={settings.judge_model}")
+    print(f"LLM cache: {'on' if settings.llm_cache_enabled else 'off'}")
 
     report: dict = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -472,7 +495,7 @@ async def main() -> None:
     elif args.ablation:
         configs = [args.ablation]
     elif args.all_ablations:
-        configs = ["full", "no_rag", "no_verify", "dense_only", "all_tools"]
+        configs = ["full", "no_rag", "no_verify", "dense_only", "all_tools", "single_agent", "no_rerank"]
     else:
         configs = ["full"]
 

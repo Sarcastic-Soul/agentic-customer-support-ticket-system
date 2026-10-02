@@ -74,7 +74,7 @@ class StubChatModel(BaseChatModel):
 
     def bind_tools(self, tools, **kwargs) -> "StubChatModel":
         # The stub never actually calls a tool - it always returns the canned
-        # response with no tool_calls, which act_node correctly reads as
+        # response with no tool_calls, which specialist_node correctly reads as
         # "no more tools needed" and ends the loop.
         return self
 

@@ -1,7 +1,8 @@
 """Stage 12 PII check: a card-like or OTP-like string in a customer message
 never appears in a recorded prompt. docs/decisions/0003-prototype-scope.md
 calls this non-negotiable ("PII redaction with messages.body_redacted...
-so what the model saw is on the record") - regex-grade, not ML-grade.
+so what the model saw is on the record"). Regex rules for cards and OTPs,
+Presidio for names, emails, phones and IDs - see app/core/pii.py.
 """
 
 from sqlalchemy import select
@@ -57,6 +58,47 @@ def test_redact_pii_passes_through_clean_text():
 def test_redact_pii_handles_empty_and_none():
     assert redact_pii("") == ""
     assert redact_pii(None) is None
+
+
+# Presidio layer (settings.pii_engine == "presidio", the default).
+
+
+def test_redact_pii_masks_email_and_phone():
+    redacted = redact_pii("reach me at priya.s@gmail.com or 9876543210")
+    assert "priya.s@gmail.com" not in redacted
+    assert "9876543210" not in redacted
+    assert "[REDACTED_EMAIL]" in redacted
+    assert "[REDACTED_PHONE]" in redacted
+
+
+def test_redact_pii_masks_person_name():
+    redacted = redact_pii("Hi I am Priya Sharma and my parcel is late")
+    assert "Priya Sharma" not in redacted
+    assert "[REDACTED_NAME]" in redacted
+
+
+def test_redact_pii_masks_pan_number():
+    redacted = redact_pii("my PAN is ABCDE1234F")
+    assert "ABCDE1234F" not in redacted
+
+
+def test_redact_pii_keeps_references_and_places():
+    # Tools need order/transaction refs verbatim; "do you ship to X" needs X.
+    text = "ORD-10432 and TXN-5521 - do you ship to Singapore?"
+    assert redact_pii(text) == text
+
+
+def test_redact_pii_falls_back_to_regex_when_presidio_breaks(monkeypatch):
+    import app.core.pii as pii
+
+    def boom():
+        raise RuntimeError("model missing")
+
+    monkeypatch.setattr(pii, "_analyzer", boom)
+    monkeypatch.setattr(pii, "_presidio_failed", False)
+    redacted = redact_pii("card 4111111111111111, I am Priya Sharma")
+    assert "[REDACTED_CARD]" in redacted
+    assert "Priya Sharma" in redacted
 
 
 async def test_ingest_message_stores_redacted_body(session):

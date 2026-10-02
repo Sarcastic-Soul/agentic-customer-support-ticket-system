@@ -1029,6 +1029,122 @@ numbers `docs/REPORT.md` §6 is still waiting on.
 
 ---
 
+## Post-Stage-12 — Specialist agents and fewer handoffs
+
+Two pieces of feedback: split the agent by domain (money, logistics, ...) and
+show how disagreements between agents are handled; and the agent handed far
+too many tickets to humans. Decisions in `decisions/0006-specialist-agents.md`
+and `decisions/0007-fewer-handoffs.md`.
+
+**What works (verified offline):**
+
+- `plan` + `act` are replaced by `supervisor` → parallel `specialist` nodes
+  (orders, logistics, payments) → `reconcile` → `commit`. The graph compiles,
+  and the `Send` fan-out and the report reducer were checked against the real
+  `merge_reports` reducer with an in-memory checkpointer.
+- Conflict rule table (`policy/conflicts.py`), supervisor routing and tool
+  budget, and carrier-investigation authorization: 32 pure unit tests pass
+  (`test_conflicts.py`, `test_specialists.py`, `test_authorize.py`).
+- Refund approval queue:
+  - `request_refund` records `requested` instead of denying.
+  - `/api/console/approvals` endpoints approve or reject.
+  - Dedupe: one payment gets at most one refund.
+- Clarify-before-escalate: up to 2 questions on low confidence or nothing
+  found. Two verify repairs instead of one.
+- New `open_carrier_investigation` tool and a KB doc for "delivered but not
+  received".
+- New seed order ORD-10200 (order record says delivered, carrier says in
+  transit), for the fact-conflict demo.
+- `agent_steps.agent` column (migration `3b7d2c9a41f0`).
+- `/admin/metrics/agents`.
+- Trace output now includes specialists and conflicts.
+
+**Verified later:** the DB-backed tests, `ruff` and a stub run all pass (see
+the Upgrades entry below). Docker had been blocked by a leftover
+`"credsStore": "desktop"` in `~/.docker/config.json`.
+
+**Eval dataset:** 21 expectations moved from `escalated`/`no_context` to
+`answered`/`clarified`. 5 new `multi_agent` cases. `single_agent` ablation
+added. `ai_resolution_rate` counts `clarified`, and `escalation_rate` is
+reported.
+
+---
+
+## Post-Stage-12 — Upgrades (reranker, tracing, Presidio, progress, cache, prompt checks, e2e)
+
+Eight upgrades from a review, all asked for. Reasons and scope change against
+0003 are in `decisions/0008-upgrades.md`.
+
+**What works (verified offline):**
+
+- flashrank reranker in hybrid search, plus a `no_rerank` ablation. A smoke
+  test picked the right cancel-policy chunk with a score of 0.9997.
+- Presidio PII redaction on top of the regex rules: names, emails, phones,
+  PAN and Aadhaar. Order and transaction references and place names are
+  kept. 13 pure PII tests pass.
+- Live progress frames to web chat, plus typed `reply` frames. 5 pure tests
+  pass.
+- Redis LLM cache in the registry. Off for live traffic, on for `make eval`
+  (`--no-cache` turns it off) and for promptfoo. 3 pure tests pass.
+- Fixable `invalid_arguments` tool errors with the field and schema. 3 pure
+  tests pass.
+- Langfuse callback handler builds when keys are set. Tracing is off
+  otherwise.
+- `make lint` is clean.
+- Playwright e2e (`frontend/e2e/`, API and WebSocket mocked): 26 passed,
+  6 skipped. The skipped ones are phone-width tests that only run in the
+  mobile project. The suite passed 3 runs in a row.
+- Chat shows the progress label next to the typing dots. Fixed a StrictMode
+  bug where a stale socket's `close` left the chat stuck on "Reconnecting".
+- promptfoo wiring checked with the stub model: config, provider and
+  assertions all run.
+
+**New Makefile targets:** `make promptfoo`, `make e2e`, `make langfuse`,
+`make langfuse-down`.
+
+**Verified with Docker (after the credential fix):** `make migrate seed
+ingest` ran, including migration `3b7d2c9a41f0`. The full backend suite
+passes: 248 tests. Eight refund tests had been failing because the test
+helper built `Transaction.amount` as a str. The tool's new `amount >
+txn.amount` check then compared a Decimal to a str. Rows loaded from
+Postgres are Decimal, so only the test was wrong. Hybrid search plus the
+reranker against the real KB picks the right top chunk for cancel,
+delivered-but-missing and refund-timeline questions. A 5-case stub eval ran
+the whole graph against the DB with 0 errors.
+
+**Not yet verified:**
+
+- The self-hosted Langfuse stack has not been started.
+- The progress events have not been seen end to end through a live worker.
+- promptfoo has not been run against a real model.
+
+**Known gap:** `en_core_web_sm` misses a lone Indian first name ("this is
+Rahul"). `PII_SPACY_MODEL=en_core_web_lg` would catch more, at about 500MB.
+
+---
+
+## First real-model eval smoke run (2026-10-01)
+
+`run_eval.py --limit 5` on Gemini `gemini-3.5-flash-lite`. Intent accuracy
+was 1.0, outcome accuracy 1.0 and tool selection 0.8, with 0 errors. The run
+found three problems:
+
+- **Seed dates were frozen at 2026-09-08.** Policy checks use the real clock,
+  so 23 days later every "still cancellable" order was past its window. The
+  "cancel happy path" case was denied and still counted as a pass. `NOW` in
+  `seed/data.py` now comes from the time the seed runs. **Re-seed before
+  every eval or demo.**
+- **Two eval checks were wrong.**
+  - `payment-failed-explain` banned the word "deducted", which failed the
+    correct reply "No money was deducted". It now bans the wrong claims
+    instead.
+  - `cancel-happy-path` didn't check for a denial. It now does.
+- **The Groq API key in `.env` is invalid (401).** The judge failed and the
+  fallback provider is unavailable. The registry no longer retries auth
+  errors, which had cost three retries on every call.
+
+---
+
 ## Running list of known limitations
 
 Things that are broken or missing on purpose. Keep this current — it goes almost

@@ -13,7 +13,14 @@ from decimal import Decimal
 SEED = 20260908
 rng = random.Random(SEED)
 
-NOW = datetime(2026, 9, 8, tzinfo=UTC)
+# Every date in the seed is relative to the moment it runs. Policy checks
+# (cancellation windows, return windows, investigation timing) compare
+# against the real clock, so a fixed date here goes stale: seeded on one day
+# and evaluated three weeks later, every "still cancellable" order is past
+# its window. Truncated to the hour so two seeds in the same hour match.
+# Re-seed (`make seed`) before an eval or a demo - short windows like
+# "cancellable for 22 more hours" start counting at seed time.
+NOW = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
 FIRST_NAMES = [
     "Aarav", "Vivaan", "Diya", "Ananya", "Ishaan", "Kavya", "Rohan", "Priya",
@@ -232,7 +239,23 @@ def build_orders() -> list[SeedOrder]:
                 ),
             )
         )
-    return edge_cases + padding
+    # Added after the padding, not with the other edge cases, so every existing
+    # order number (ORD-10000..ORD-10199, which the eval dataset refers to)
+    # stays the same. This one is ORD-10200.
+    late_edge_cases = [
+        SeedOrder(
+            "ord_carrier_mismatch", "cust_repeat", "delivered",
+            Decimal("2199.00"), NOW - timedelta(days=5),
+            promised_delivery=(NOW - timedelta(days=1)).date(),
+            delivered_at=NOW - timedelta(days=1),
+            return_window_ends=(NOW + timedelta(days=6)).date(),
+            items=[{"sku": "SKU-SPEAKER-01", "name": "Bluetooth Speaker", "qty": 1, "unit_price": "2199.00"}],
+            shipment={"carrier": "Ekart", "status": "in_transit", "eta": (NOW - timedelta(days=1)).date()},
+            note="order record says delivered, carrier still says in transit - the "
+            "orders and logistics specialists see different facts",
+        ),
+    ]
+    return edge_cases + padding + late_edge_cases
 
 
 def build_transactions(orders: list[SeedOrder]) -> tuple[list[SeedTransaction], list[SeedRefund]]:
@@ -247,6 +270,8 @@ def build_transactions(orders: list[SeedOrder]) -> tuple[list[SeedTransaction], 
         )
 
     for order in orders:
+        if order.key == "ord_carrier_mismatch":
+            continue  # added after the padding below, so the rng sequence is unchanged
         if order.key == "ord_failed_payment_never_placed":
             txns.append(
                 SeedTransaction(
@@ -308,6 +333,16 @@ def build_transactions(orders: list[SeedOrder]) -> tuple[list[SeedTransaction], 
             payment.failure_code = rng.choice(["insufficient_funds", "card_declined", "gateway_timeout"])
         txns.append(payment)
 
+    for order in orders:
+        if order.key == "ord_carrier_mismatch":
+            txns.append(
+                SeedTransaction(
+                    f"txn_{order.key}", order.key, order.customer_key, "payment", "upi",
+                    order.total_amount, "captured", order.placed_at,
+                    settled_at=order.placed_at + timedelta(minutes=2),
+                )
+            )
+
     return txns, refunds
 
 
@@ -349,7 +384,9 @@ KB_DOCUMENTS = [
             "An order can be cancelled free of charge within 24 hours of being placed, "
             "and only while it is still in 'placed' or 'confirmed' status. Once an order "
             "has shipped, it can no longer be cancelled - the customer should use the "
-            "return process after delivery instead."
+            "return process after delivery instead. When an order is cancelled, the "
+            "full amount paid is refunded to the original payment method automatically - "
+            "no separate refund request is needed."
         ),
     },
     {
@@ -362,7 +399,9 @@ KB_DOCUMENTS = [
             "non-returnable at checkout (for example innerwear, and jeans purchased in a "
             "final-sale bundle) and cannot be returned regardless of the window. Requests "
             "made after the return window has closed are not eligible for automatic "
-            "approval and should be escalated for a case-by-case decision."
+            "approval and should be escalated for a case-by-case decision. The refund "
+            "for a returned item is issued once the item is received back at the "
+            "warehouse, so no separate refund request is needed."
         ),
     },
     {
@@ -372,10 +411,24 @@ KB_DOCUMENTS = [
         "body": (
             "# My order hasn't arrived by the promised date\n\n"
             "Delivery delays of 1-2 days beyond the promised date can happen due to "
-            "carrier volume, especially around holidays. If a shipment shows no scan "
-            "activity for more than 3 days, or is more than 5 days past its promised "
-            "delivery date, treat it as a delivery issue requiring escalation rather than "
-            "a routine delay."
+            "carrier volume, especially around holidays. If a shipment is more than 3 "
+            "days past its promised delivery date, we open a carrier investigation: the "
+            "carrier replies within 5 business days, and the customer then gets either "
+            "the parcel, a free replacement, or a full refund."
+        ),
+    },
+    {
+        "title": "Parcel marked delivered but not received",
+        "source": "policy",
+        "category": "shipping",
+        "body": (
+            "# Tracking says delivered but I don't have my parcel\n\n"
+            "Parcels marked delivered are often left with a neighbour, a building "
+            "security desk, or in a safe place near the door, so first check there. "
+            "If the parcel still hasn't turned up 24 hours after the delivery scan, we "
+            "open a carrier investigation. The carrier replies within 5 business days, "
+            "and the customer then gets either a free replacement or a full refund. "
+            "The customer does not need to file anything themselves."
         ),
     },
     {

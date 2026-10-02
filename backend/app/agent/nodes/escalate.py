@@ -65,7 +65,7 @@ async def escalate_node(state: AgentState, config) -> dict:
         ticket.ai_turns += 1
 
         ack_text = (
-            f"I've passed this to a specialist, reference {ticket.reference}. "
+            f"I've passed this to our support team, reference {ticket.reference}. "
             "They'll follow up shortly."
         )
         ack_message = Message(
@@ -100,7 +100,7 @@ async def escalate_node(state: AgentState, config) -> dict:
             "human_note": decision.get("note"),
             "escalation_reason_code": None,
             "escalation_priority": None,
-            "verify_repair_attempted": False,
+            "verify_repairs": 0,
             "verify_passed": None,
             "outcome": None,
         }

@@ -1,9 +1,10 @@
+from datetime import date, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.models import Refund, Transaction
+from app.models import Order, Refund, Transaction
 from app.policy.authorize import Decision, authorize_refund
 from app.tools.context import ToolContext
 from app.tools.orders import OrderNumberArgs, get_order_scoped
@@ -139,9 +140,10 @@ async def explain_payment_failure(ctx: ToolContext, txn_ref: str) -> dict:
 
 @register_tool(
     "request_refund",
-    "Request a refund on one of the customer's own transactions. Denied "
-    "automatically above the policy ceiling or without a matching fault - "
-    "those require human approval, they are not retryable by asking again.",
+    "Request a refund on one of the customer's own transactions. Auto-approved "
+    "up to the policy ceiling when there is a matching failed or duplicate "
+    "charge; anything else goes to the human approval queue and the customer "
+    "is told it is under review. Asking again does not change the outcome.",
     RequestRefundArgs,
     write=True,
 )
@@ -149,27 +151,68 @@ async def request_refund(ctx: ToolContext, txn_ref: str, amount: Decimal, reason
     txn = await _get_txn_scoped(ctx, txn_ref)
     if txn is None:
         return {"error": "transaction_not_found"}
+    order = await ctx.session.get(Order, txn.order_id) if txn.order_id else None
+    order_number = order.order_number if order else None
+
+    if amount <= 0 or amount > txn.amount:
+        return {
+            "denied": True, "order_number": order_number,
+            "reason": f"refund amount must be above 0 and at most the payment amount {txn.amount}",
+        }
+
+    existing = (
+        await ctx.session.execute(
+            select(Refund).where(Refund.transaction_id == txn.id, Refund.status != "rejected")
+        )
+    ).scalars().first()
+    if existing is not None:
+        # Same customer asking twice, or two turns both deciding to refund -
+        # one payment gets one refund.
+        return {
+            "denied": True, "order_number": order_number, "refund_id": existing.id,
+            "reason": f"a refund for this payment already exists (status: {existing.status})",
+        }
 
     has_matching = await _has_matching_failed_or_duplicate(ctx, txn)
     decision = authorize_refund(amount, has_matching)
-    if decision.decision != Decision.ALLOW:
+    needs_approval = decision.decision != Decision.ALLOW or ctx.force_approval
+
+    if ctx.propose_only:
         return {
-            "denied": True,
+            "proposed": True, "order_number": order_number, "needs_approval": needs_approval,
             "reason": decision.reason,
-            "requires_human": decision.decision == Decision.REQUIRE_HUMAN,
+            "would": f"refund {amount} on {txn_ref}"
+            + (" (sent for human approval)" if needs_approval else ""),
         }
 
+    # authorize() still decides - the model can ask for any refund, but
+    # only one inside the ceiling with a matching fault is approved here.
+    # Anything else becomes a request a human approves or rejects from the
+    # console's approval queue, which is far less work for them than taking
+    # over the whole conversation (see docs/decisions/0007-fewer-handoffs.md).
     refund = Refund(
         transaction_id=txn.id,
+        ticket_id=ctx.ticket_id or None,
         amount=amount,
         reason=reason,
-        status="requested",
+        status="requested" if needs_approval else "approved",
         requested_by_type="ai",
         requested_by_id=str(ctx.run_id),
+        expected_credit_by=None if needs_approval else date.today() + timedelta(days=7),
     )
     ctx.session.add(refund)
     await ctx.session.flush()
-    return {"requested": True, "refund_id": refund.id, "status": refund.status}
+    if needs_approval:
+        return {
+            "pending_approval": True, "refund_id": refund.id, "order_number": order_number,
+            "status": "awaiting human approval",
+            "reason": decision.reason if decision.decision != Decision.ALLOW
+            else "several refunds together pass the auto-approval ceiling",
+        }
+    return {
+        "approved": True, "refund_id": refund.id, "order_number": order_number,
+        "status": refund.status, "expected_credit_by": refund.expected_credit_by.isoformat(),
+    }
 
 
 @register_tool(

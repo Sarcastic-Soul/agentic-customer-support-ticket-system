@@ -241,6 +241,7 @@ class ToolCallOut(BaseModel):
 class AgentStepOut(BaseModel):
     ordinal: int
     node: str
+    agent: str | None
     model: str | None
     output: dict | None
     tokens_in: int | None
@@ -262,6 +263,8 @@ class AgentRunOut(BaseModel):
     latency_ms: int | None
     started_at: datetime
     finished_at: datetime | None
+    specialists: list[str]
+    conflicts: list[dict]
     steps: list[AgentStepOut]
 
 
@@ -292,7 +295,8 @@ async def get_ticket_runs(
             ).scalars().all()
             step_outs.append(
                 AgentStepOut(
-                    ordinal=step.ordinal, node=step.node, model=step.model, output=step.output,
+                    ordinal=step.ordinal, node=step.node, agent=step.agent,
+                    model=step.model, output=step.output,
                     tokens_in=step.tokens_in, tokens_out=step.tokens_out,
                     latency_ms=step.latency_ms, error=step.error,
                     tool_calls=[
@@ -305,9 +309,13 @@ async def get_ticket_runs(
                     ],
                 )
             )
+        supervisor = next((st for st in steps if st.node == "supervisor"), None)
+        reconcile_steps = [st for st in steps if st.node == "reconcile" and st.output]
         out.append(
             AgentRunOut(
                 id=run.id, trigger=run.trigger, outcome=run.outcome, intent=run.intent,
+                specialists=(supervisor.output or {}).get("specialists", []) if supervisor else [],
+                conflicts=[c for st in reconcile_steps for c in st.output.get("conflicts", [])],
                 confidence=float(run.confidence) if run.confidence is not None else None,
                 total_tokens_in=run.total_tokens_in, total_tokens_out=run.total_tokens_out,
                 est_cost_usd=run.est_cost_usd, latency_ms=run.latency_ms,
@@ -421,6 +429,57 @@ async def metrics_intents(
             "escalation_rate": round(sum(1 for t in rows if _was_escalated(t)) / len(rows), 3),
         }
         for intent, rows in sorted(by_intent.items(), key=lambda kv: -len(kv[1]))
+    ]
+
+
+class AgentMetric(BaseModel):
+    agent: str
+    runs: int
+    tool_calls: int
+    denied: int
+    conflicts: int
+
+
+@router.get("/metrics/agents", response_model=list[AgentMetric])
+async def metrics_agents(
+    range_days: int = Query(7, alias="range"), session: AsyncSession = Depends(get_session)
+) -> list[AgentMetric]:
+    """Per-specialist workload: how many runs each one worked, how many tool
+    calls it made, how many were refused by policy, and how many conflicts
+    it was part of.
+    """
+    since = datetime.now(UTC) - timedelta(days=range_days)
+    rows = (
+        await session.execute(
+            select(
+                AgentStep.agent,
+                func.count(func.distinct(AgentStep.run_id)),
+                func.count(ToolCall.id),
+                func.count(ToolCall.id).filter(ToolCall.authorized.is_(False)),
+            )
+            .outerjoin(ToolCall, ToolCall.step_id == AgentStep.id)
+            .where(AgentStep.agent.is_not(None), AgentStep.created_at >= since)
+            .group_by(AgentStep.agent)
+        )
+    ).all()
+    conflict_counts: dict[str, int] = {}
+    reconcile_outputs = (
+        await session.execute(
+            select(AgentStep.output).where(
+                AgentStep.node == "reconcile", AgentStep.created_at >= since
+            )
+        )
+    ).scalars().all()
+    for output in reconcile_outputs:
+        for conflict in (output or {}).get("conflicts", []):
+            for agent in conflict.get("agents", []):
+                conflict_counts[agent] = conflict_counts.get(agent, 0) + 1
+    return [
+        AgentMetric(
+            agent=agent, runs=runs, tool_calls=calls, denied=denied,
+            conflicts=conflict_counts.get(agent, 0),
+        )
+        for agent, runs, calls, denied in sorted(rows, key=lambda r: -r[1])
     ]
 
 

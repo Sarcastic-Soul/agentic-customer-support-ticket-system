@@ -9,6 +9,7 @@ from decimal import Decimal
 from app.policy.authorize import (
     Decision,
     authorize_cancel_order,
+    authorize_carrier_investigation,
     authorize_refund,
     authorize_return_item,
 )
@@ -95,3 +96,47 @@ def test_refund_at_exact_ceiling_is_allowed():
     ceiling = Decimal(str(settings.auto_refund_ceiling))
     result = authorize_refund(ceiling, has_matching_failed_or_duplicate_txn=True)
     assert result.decision == Decision.ALLOW
+
+
+class FakeParcelOrder:
+    def __init__(self, *, status, delivered_at=None, promised_delivery=None):
+        self.status = status
+        self.delivered_at = delivered_at
+        self.promised_delivery = promised_delivery
+
+
+class FakeShipment:
+    def __init__(self, status):
+        self.status = status
+
+
+def test_investigation_denied_within_24h_of_delivery_scan():
+    order = FakeParcelOrder(status="delivered", delivered_at=datetime.now(UTC) - timedelta(hours=3))
+    result = authorize_carrier_investigation(order, FakeShipment("delivered"))
+    assert result.decision == Decision.DENY
+    assert "neighbour" in result.reason
+
+
+def test_investigation_allowed_after_24h_not_received():
+    order = FakeParcelOrder(status="delivered", delivered_at=datetime.now(UTC) - timedelta(days=2))
+    result = authorize_carrier_investigation(order, FakeShipment("delivered"))
+    assert result.decision == Decision.ALLOW
+
+
+def test_investigation_denied_for_normal_delay():
+    promised = (datetime.now(UTC) - timedelta(days=1)).date()
+    order = FakeParcelOrder(status="shipped", promised_delivery=promised)
+    result = authorize_carrier_investigation(order, FakeShipment("in_transit"))
+    assert result.decision == Decision.DENY
+
+
+def test_investigation_allowed_when_stuck_past_promised_date():
+    promised = (datetime.now(UTC) - timedelta(days=6)).date()
+    order = FakeParcelOrder(status="shipped", promised_delivery=promised)
+    result = authorize_carrier_investigation(order, FakeShipment("in_transit"))
+    assert result.decision == Decision.ALLOW
+
+
+def test_investigation_denied_before_shipping():
+    order = FakeParcelOrder(status="placed")
+    assert authorize_carrier_investigation(order, None).decision == Decision.DENY

@@ -95,7 +95,8 @@ class Refund(Base):
     ticket_id: Mapped[int | None] = mapped_column(ForeignKey("tickets.id"))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     reason: Mapped[str] = mapped_column(Text)
-    status: Mapped[str]  # requested | approved | rejected | processing | completed
+    # requested (waiting in the approval queue) | approved | rejected | processing | completed
+    status: Mapped[str] = mapped_column(index=True)
     requested_by_type: Mapped[str]  # ai | human
     requested_by_id: Mapped[str | None]
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("human_agents.id"))

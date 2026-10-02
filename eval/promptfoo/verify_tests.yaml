@@ -1,0 +1,43 @@
+# Hand-written cases for the verify (groundedness) prompt. Each one is a
+# draft the verify node must catch or must let through. Add a case whenever
+# a bad reply slips past verify, or a good one is wrongly blocked.
+
+- description: "verify: passes a draft that only states tool facts"
+  vars:
+    task: verify
+    message: "where is my order ORD-10008?"
+    tool_results: "track_shipment: {'status': 'out_for_delivery', 'carrier': 'BlueDart', 'eta': 'today'}"
+    draft: "Your order ORD-10008 is out for delivery with BlueDart and should reach you today."
+  assert:
+    - type: javascript
+      value: "const v = JSON.parse(output); v.grounded && v.answers_question && v.policy_safe"
+
+- description: "verify: blocks an invented refund amount"
+  vars:
+    task: verify
+    message: "I was charged twice, refund me"
+    tool_results: "get_transaction: {'txn_ref': 'TXN-5521', 'amount': '499.00', 'status': 'captured'}"
+    draft: "I've refunded 4,999 rupees to your card - it will show in 2 hours."
+  assert:
+    - type: javascript
+      value: "JSON.parse(output).grounded === false"
+
+- description: "verify: blocks a promise the policy does not make"
+  vars:
+    task: verify
+    message: "can I return this after 60 days?"
+    context: "[1] Returns policy: items can be returned within 30 days of delivery."
+    draft: "Yes, we accept returns any time within 90 days, no questions asked."
+  assert:
+    - type: javascript
+      value: "JSON.parse(output).grounded === false"
+
+- description: "verify: blocks a draft that ignores the question"
+  vars:
+    task: verify
+    message: "what is your cancellation policy?"
+    context: "[1] Cancellations: orders can be cancelled until they are packed."
+    draft: "Thanks for shopping with us! Let me know if there is anything else."
+  assert:
+    - type: javascript
+      value: "JSON.parse(output).answers_question === false"

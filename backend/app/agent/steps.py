@@ -3,6 +3,8 @@
 node writes one, success or failure.
 """
 
+import asyncio
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ async def record_step(
     *,
     run_id: int,
     node: str,
+    agent: str | None = None,
     model: str | None = None,
     prompt: str | None = None,
     output: dict | None = None,
@@ -31,6 +34,7 @@ async def record_step(
         run_id=run_id,
         ordinal=ordinal,
         node=node,
+        agent=agent,
         model=model,
         prompt=prompt,
         output=output,
@@ -42,3 +46,12 @@ async def record_step(
     session.add(step)
     await session.flush()
     return step
+
+
+def session_lock(session: AsyncSession) -> asyncio.Lock:
+    """One AsyncSession can't run two statements at once, and parallel
+    specialists share the run's session. They hold this lock around every
+    database call (their LLM calls, the slow part, still overlap). Kept on
+    session.info so every node touching the same session finds the same lock.
+    """
+    return session.info.setdefault("agent_db_lock", asyncio.Lock())

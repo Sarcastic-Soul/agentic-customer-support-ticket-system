@@ -11,17 +11,24 @@ stateDiagram-v2
     Classify --> HardRoute
     HardRoute: deterministic pre-checks (explicit human request,<br/>abuse, known-bad state)
     HardRoute --> Escalate: rule fires
-    HardRoute --> Plan: otherwise
-    Plan: pick tool group, decide if retrieval needed
-    Plan --> Retrieve
+    HardRoute --> Answer: unclear - ask one question
+    HardRoute --> Supervisor: otherwise
+    Supervisor: pick 0-2 specialists from intent + secondary_intent
+    Supervisor --> Retrieve
     Retrieve: hybrid RAG when the intent is knowledge-shaped
-    Retrieve --> Act
-    Act: bounded tool loop (max 5 calls)
-    Act --> Act: needs another tool
-    Act --> Verify
+    Retrieve --> Specialists
+    Specialists: orders / logistics / payments in parallel,<br/>each a bounded tool loop that only PROPOSES writes
+    Specialists --> Reconcile
+    Reconcile: rule table settles conflicts between specialists
+    Reconcile --> Commit: settled
+    Reconcile --> Escalate: no rule covers it
+    Commit: carry out surviving proposals (authorize() again)
+    Commit --> Answer
+    Answer --> Verify
     Verify: groundedness + policy + completeness check
     Verify --> Respond: passes
-    Verify --> Escalate: fails or low confidence
+    Verify --> Answer: repair (up to 2)
+    Verify --> Escalate: still fails
     Respond: render for channel, send, update ticket
     Respond --> [*]
     Escalate: build handoff packet, enqueue, notify customer
@@ -114,20 +121,21 @@ Deterministic, no LLM. Fires before any reasoning. See
 language, legal/chargeback keywords, `intent == unknown` with low confidence,
 customer already escalated).
 
-### 4. `plan`
-Selects a **tool group** rather than a "sub-agent":
+### 4. `supervisor`
+Picks which **specialist agents** work the message. Replaced the earlier
+`plan` node's single tool group - see `decisions/0006-specialist-agents.md`.
 
-| Intent family | Tool group | Retrieval |
+| Specialist | Intents | Tools |
 |---|---|---|
-| `order_*`, `delivery_issue`, `damaged_or_missing_item` | orders | policy chunks only |
-| `refund_*`, `payment_failed`, `invoice_request`, `billing_dispute` | transactions | policy chunks only |
-| `product_question`, `policy_question` | knowledge | full hybrid search |
-| `account_issue`, `complaint` | tickets + knowledge | full |
-| `chitchat`, `feedback` | none | none |
+| orders | `order_cancel`, `order_modify`, `order_return` | order lookups, cancellation, returns |
+| logistics | `order_status`, `delivery_issue`, `damaged_or_missing_item` | order lookups, tracking, carrier investigation, returns |
+| payments | `refund_*`, `payment_failed`, `invoice_request`, `billing_dispute` | transaction lookups, refunds, invoices |
+| none (knowledge) | `product_question`, `policy_question`, `account_issue`, `complaint` | retrieval only |
+| none | `chitchat`, `feedback`, `unknown` | nothing |
 
-Restricting the tool set per intent cuts prompt size, cuts wrong-tool errors, and
-makes behaviour explainable in the report. This is the honest version of
-"specialised agents" — same effect, one tenth the code.
+`classify` may return a `secondary_intent`. If it belongs to a different
+specialist, both run in parallel (at most 2). `MAX_TOOL_CALLS` is split between
+them (3 + 2), so the turn keeps the same overall limit.
 
 ### 5. `retrieve` — hybrid RAG
 
@@ -136,9 +144,14 @@ query  ->  (a) rewrite into a standalone question using history
        ->  (b) dense:   pgvector cosine over kb_chunks, top 20
        ->  (c) sparse:  tsvector ts_rank over kb_chunks, top 20
        ->  (d) fuse:    Reciprocal Rank Fusion, k=60
-       ->  (e) rerank:  flashrank cross-encoder, keep top 5   [stage 6+]
+       ->  (e) rerank:  flashrank cross-encoder over the top 20 fused, keep top 5
        ->  (f) gate:    if best score < threshold -> retrieved = []
 ```
+
+The reranker (`app/rag/rerank.py`, `ms-marco-TinyBERT-L-2-v2` on the CPU)
+reads query and chunk together, which RRF's rank positions can't. If the
+model can't load, retrieval keeps RRF order. Measured by the `no_rerank`
+ablation. See `decisions/0008-upgrades.md`.
 
 Ingestion: markdown documents split on headings, then packed to ~400 tokens with
 ~60 token overlap, `heading_path` preserved and prepended to the chunk text
@@ -147,21 +160,46 @@ before embedding (cheap and materially improves retrieval).
 Every retrieved chunk carries its `kb_chunk.id`. The answer prompt requires
 citations, and `verify` rejects a factual claim with no citation.
 
-### 6. `act` — bounded tool loop
+### 6. `specialist` — bounded tool loop, one per domain
 
 ```python
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 5   # split across the specialists working this turn
 ```
 
-The model is given only the tool group's schemas. Each iteration: model returns
-either tool calls or a final draft. Tool calls go through `policy.authorize`
-first. Results append to `tool_results` and go back into the prompt. On the 5th
-call the loop stops and hands off to `verify` with whatever it has — an unbounded
-loop is the classic way an agent demo burns a free tier in 40 seconds.
+Each specialist gets only its own tools and its own prompt
+(`prompts/specialist_*.md`). Each iteration: the model returns either tool calls
+or a short note for the team. Tool calls go through `policy.authorize` first.
 
-Errors are surfaced to the model **once** in a structured form
+**Write tools only propose.** With `ToolContext.propose_only=True`, a write tool
+checks eligibility and `authorize()` as usual and returns
+`{"proposed": true, "would": ...}` instead of changing anything. The model is
+told the action is queued.
+
+Errors are shown to the model in a structured form
 (`{"error": "order_not_found", "hint": "ask the customer to confirm the number"}`)
-so it can recover; a second failure of the same tool escalates.
+so it can recover. The prompts tell it to call `list_recent_orders` when an order
+number is wrong or missing, rather than give up.
+
+### 6a. `reconcile` — when specialists disagree
+
+Pure code, no LLM: `app/policy/conflicts.py`. It compares every specialist's
+reads and proposals:
+
+- **fact**: the order record and the carrier disagree. The carrier wins
+  (`carrier_is_truth_for_parcel`). Writes on that order wait for the next turn.
+- **duplicate**: the same action proposed twice. Kept once.
+- **action**: actions that can't all happen (cancel + refund, investigation +
+  refund, ...). Settled by a fixed rule table. Each dropped action becomes a
+  note the reply can explain to the customer.
+
+Only a pair of actions no rule covers escalates (`agent_conflict`). With the
+current tools that can't happen. Every conflict is recorded on the reconcile
+step and shown in the ticket trace. Full table in
+`decisions/0006-specialist-agents.md`.
+
+### 6b. `commit`
+Carries out the surviving proposals for real. `authorize()` runs again on the
+current data.
 
 ### 7. `verify` — the node most projects skip
 
@@ -181,7 +219,13 @@ Deterministic checks alongside it: no bare dates that did not come from a tool
 result, no currency amount absent from `tool_results`, no order number the
 customer did not mention and no tool returned.
 
-Fail -> one repair attempt with the verdict fed back -> fail again -> escalate.
+Fail -> up to two repair attempts with the verdict fed back -> still failing -> escalate.
+A clarifying question skips verify: it states no facts.
+
+Because every reply must pass verify, replies are never streamed token by
+token. Web chat gets *progress* events instead while the graph runs
+(`app/agent/progress.py`): "Reading your message", "Checking your order",
+"Double-checking the answer". The verified reply then arrives whole.
 
 ### 8. `respond`
 Renders per channel (`style`), persists the assistant message, sends via the

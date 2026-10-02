@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from app.agent.nodes.answer import format_context, format_tool_results
+from app.agent.progress import emit_progress
 from app.agent.prompts import load_prompt
 from app.agent.state import AgentState
 from app.agent.steps import record_step
@@ -18,19 +19,26 @@ class VerifyVerdict(BaseModel):
 
 async def verify_node(state: AgentState, config) -> dict:
     """Groundedness/policy-safety gate before anything reaches a customer.
-    One repair attempt (re-run answer with the verdict's reasoning fed
-    back), then escalate rather than loop. Also where the two Stage-6
-    escalation triggers that depend on Stage 4/5 output live:
-    knowledge_gap (nothing to answer from) and policy_limit_exceeded (a
-    write tool was denied and needs a human).
+    Up to settings.max_verify_repairs repair attempts (re-run answer with
+    the verdict's reasoning fed back), then escalate rather than loop. Also
+    where the knowledge_gap trigger lives (nothing to answer from, after
+    max_clarifications questions). A refund above policy no longer
+    escalates here - it waits in the approval queue instead (see
+    docs/decisions/0007-fewer-handoffs.md).
     """
     session = config["configurable"]["session"]
 
     if state["outcome"] == "no_context":
         return {"escalation_reason_code": "knowledge_gap", "escalation_priority": "P3"}
 
-    if any(r["result"].get("requires_human") for r in state["tool_results"]):
-        return {"escalation_reason_code": "policy_limit_exceeded", "escalation_priority": "P2"}
+    if state["outcome"] == "clarified":
+        # A clarifying question states no facts, so there is nothing to
+        # ground - and "answers_question" would fail it by design.
+        await record_step(
+            session, run_id=state["run_id"], node="verify",
+            output={"skipped": True, "reason": "clarifying question - no facts to check"},
+        )
+        return {"verify_passed": True}
 
     if settings.eval_ablation == "no_verify":
         # Stage 11 ablation: the deterministic escalation triggers above stay
@@ -42,6 +50,7 @@ async def verify_node(state: AgentState, config) -> dict:
         )
         return {"verify_passed": True}
 
+    await emit_progress(config, "verify", "Double-checking the answer")
     prompt = load_prompt(
         "verify",
         context=format_context(state["retrieved"]),
@@ -69,7 +78,7 @@ async def verify_node(state: AgentState, config) -> dict:
     if passed:
         return {"verify_passed": True}
 
-    if not state["verify_repair_attempted"]:
+    if state.get("verify_repairs", 0) < settings.max_verify_repairs:
         feedback = (
             f"Your previous draft failed review: grounded={verdict.grounded if verdict else '?'}, "
             f"answers_question={verdict.answers_question if verdict else '?'}, "
@@ -79,7 +88,7 @@ async def verify_node(state: AgentState, config) -> dict:
         )
         return {
             "verify_passed": False,
-            "verify_repair_attempted": True,
+            "verify_repairs": state.get("verify_repairs", 0) + 1,
             "verify_feedback": feedback,
         }
 

@@ -33,3 +33,7 @@ eval/reports/*.md
 .idea/
 .vscode/
 *.swp
+
+# local tooling
+.claude/worktrees/
+.playwright-mcp/

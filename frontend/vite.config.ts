@@ -7,6 +7,9 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
   server: {
+    // Playwright writes traces and its HTML report while tests run; watching
+    // them makes Vite reload every open page mid-test.
+    watch: { ignored: ["**/playwright-report/**", "**/test-results/**"] },
     proxy: {
       "/api": "http://localhost:8000",
       "/dev": "http://localhost:8000",

@@ -47,7 +47,7 @@ class WebAdapter:
         # them. The WS handler subscribes to this same channel name.
         await self._redis.publish(
             ws_channel_name(reply.external_thread_id),
-            json.dumps({"text": reply.text}),
+            json.dumps({"type": "reply", "text": reply.text}),
         )
         return DeliveryReceipt(ok=True)
 

@@ -1,6 +1,7 @@
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
+from app.agent.progress import emit_progress
 from app.agent.prompts import load_prompt
 from app.agent.state import AgentState
 from app.agent.steps import record_step
@@ -20,6 +21,7 @@ class Classification(BaseModel):
     intent: str
     confidence: float
     requires_account_access: bool
+    secondary_intent: str | None = None
 
 
 def _format_history(history: list[dict]) -> str:
@@ -30,6 +32,7 @@ def _format_history(history: list[dict]) -> str:
 
 async def classify_node(state: AgentState, config: RunnableConfig) -> dict:
     session = config["configurable"]["session"]
+    await emit_progress(config, "classify", "Reading your message")
 
     prompt = load_prompt(
         "classify",
@@ -43,6 +46,9 @@ async def classify_node(state: AgentState, config: RunnableConfig) -> dict:
 
     intent = result.intent if result and result.intent in INTENTS else "unknown"
     confidence = result.confidence if result else 0.0
+    secondary = result.secondary_intent if result else None
+    if secondary not in INTENTS or secondary == intent:
+        secondary = None
 
     await record_step(
         session,
@@ -50,10 +56,13 @@ async def classify_node(state: AgentState, config: RunnableConfig) -> dict:
         node="classify",
         model=f"{outcome.provider}:{outcome.model}",
         prompt=prompt,
-        output={"intent": intent, "confidence": confidence} if result else None,
+        output=(
+            {"intent": intent, "confidence": confidence, "secondary_intent": secondary}
+            if result else None
+        ),
         tokens_in=outcome.tokens_in,
         tokens_out=outcome.tokens_out,
         latency_ms=outcome.latency_ms,
     )
 
-    return {"intent": intent, "intent_confidence": confidence}
+    return {"intent": intent, "intent_confidence": confidence, "secondary_intent": secondary}

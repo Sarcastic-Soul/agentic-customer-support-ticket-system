@@ -149,6 +149,9 @@ async def request_cancellation(ctx: ToolContext, order_number: str, reason: str)
     if decision.decision != Decision.ALLOW:
         return {"denied": True, "reason": decision.reason}
 
+    if ctx.propose_only:
+        return {"proposed": True, "order_number": order.order_number, "would": "cancel the order"}
+
     order.status = "cancelled"
     await ctx.session.flush()
     return {"cancelled": True, "order_number": order.order_number}
@@ -196,6 +199,12 @@ async def initiate_return(ctx: ToolContext, order_number: str, sku: str, reason:
     decision = authorize_return_item(order, item)
     if decision.decision != Decision.ALLOW:
         return {"denied": True, "reason": decision.reason}
+
+    if ctx.propose_only:
+        return {
+            "proposed": True, "order_number": order.order_number, "sku": sku,
+            "would": f"start a return for {sku}",
+        }
 
     # Whole-order status, not per-item - a real system would track return
     # state per line item. Fine for a prototype; see docs/PROGRESS.md.

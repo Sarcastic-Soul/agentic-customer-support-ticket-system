@@ -176,6 +176,7 @@ async def handle_message(
                 message_id=message.id,
                 latest_message=message.body_redacted or message.body,
                 owns_session=owns_session,
+                publish_progress=True,
             )
         except Exception as exc:  # noqa: BLE001 - the customer must hear *something*, whatever broke
             logger.exception("handle_message_failed", message_id=message_id, ticket_id=ticket.id)

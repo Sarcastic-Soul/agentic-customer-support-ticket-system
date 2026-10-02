@@ -50,7 +50,7 @@ class VoiceAdapter:
     async def send(self, reply: OutboundMessage) -> DeliveryReceipt:
         await self._redis.publish(
             ws_channel_name(reply.external_thread_id),
-            json.dumps({"text": reply.text}),
+            json.dumps({"type": "reply", "text": reply.text}),
         )
         return DeliveryReceipt(ok=True)
 

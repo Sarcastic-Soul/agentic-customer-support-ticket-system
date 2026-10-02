@@ -50,6 +50,18 @@ def get_tool_spec(name: str) -> ToolSpec:
     return _REGISTRY[name]
 
 
+def invalid_arguments_result(spec: ToolSpec, exc: ValidationError) -> dict:
+    return {
+        "error": "invalid_arguments",
+        "fields": [
+            {"field": ".".join(str(p) for p in e["loc"]) or "(arguments)", "problem": e["msg"]}
+            for e in exc.errors(include_url=False, include_input=False)
+        ],
+        "expected_schema": spec.args_schema.model_json_schema(),
+        "hint": f"Call {spec.name} again with the arguments fixed.",
+    }
+
+
 async def execute_tool(
     spec: ToolSpec, ctx: ToolContext, args: dict, *, step_id: int | None = None
 ) -> dict:
@@ -73,14 +85,18 @@ async def execute_tool(
     deny_reason: str | None = None
 
     try:
-        try:
-            validated = spec.args_schema.model_validate(args)
-        except ValidationError as exc:
-            raise ValueError(f"invalid arguments for {spec.name}: {exc}") from exc
+        validated = spec.args_schema.model_validate(args)
         result = await spec.func(ctx, **validated.model_dump())
         if spec.write and result.get("denied"):
             authorized = False
             deny_reason = result.get("reason")
+    except ValidationError as exc:
+        # Shaped so the model can fix its own call on the next round: which
+        # field, what was wrong, and the schema it should have followed.
+        # The retry still counts against MAX_TOOL_CALLS.
+        result = invalid_arguments_result(spec, exc)
+        error = f"invalid arguments: {exc.error_count()} field error(s)"
+        logger.info("tool_call_invalid_arguments", tool=spec.name, args=args)
     except Exception as exc:  # noqa: BLE001 - surfaced to the model as a structured error
         logger.warning("tool_call_failed", tool=spec.name, args=args, error=str(exc))
         result = {"error": "tool_execution_failed", "hint": str(exc)}

@@ -44,7 +44,11 @@ class AgentStep(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
     ordinal: Mapped[int]
-    node: Mapped[str]  # classify | retrieve | act | verify | ...
+    node: Mapped[str]  # classify | supervisor | retrieve | specialist | reconcile | commit | ...
+    # which specialist ran this step: orders | logistics | payments |
+    # knowledge (retrieve) | generalist (single_agent ablation); NULL for
+    # shared nodes
+    agent: Mapped[str | None]
     model: Mapped[str | None]
     prompt: Mapped[str | None] = mapped_column(Text)  # redacted
     output: Mapped[dict | None] = mapped_column(JSONB)

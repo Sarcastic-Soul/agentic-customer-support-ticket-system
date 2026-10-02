@@ -1,0 +1,80 @@
+# High-level architecture, for a first read. Explained in
+# docs/architecture-overview.md. The full picture is in docs/architecture.d2.
+# Render with:
+#   d2 docs/architecture-overview.d2 docs/architecture-overview.svg
+
+vars: {
+  d2-config: {
+    theme-id: 302
+    layout-engine: elk
+    pad: 40
+  }
+}
+
+direction: down
+
+title: |md
+  # How a support message gets answered
+| {near: top-center}
+
+customer: Customer {shape: person}
+
+channels: Channels {
+  label: "Channels\nweb chat · WhatsApp · email · voice"
+}
+
+intake: Intake {
+  label: "Intake\nsave the message, drop duplicates,\nput it in the queue"
+}
+
+agent: AI agent {
+  direction: down
+
+  understand: "1. Understand\nwhat does the customer want?"
+  safety: "2. Safety check\nlegal? distress? asked for a human?\ntoo unclear?" {shape: diamond}
+  pick: "3. Pick the experts\nfixed table, no AI guessing"
+  search: "4. Search help articles"
+  experts: "5. Experts work in parallel" {
+    orders: Orders
+    delivery: Delivery
+    payments: Payments
+    note: "look up real data\npropose actions, change nothing\nmax 5 lookups" {shape: page}
+  }
+  settle: "6. Settle disagreements\nrule table in code" {shape: diamond}
+  act: "7. Carry out actions\nrules checked again"
+  write: "8. Write the reply"
+  check: "9. Fact-check the reply\nis every claim backed by data?" {shape: diamond}
+
+  understand -> safety
+  safety -> pick: ok
+  safety -> write: unclear, ask a question {style.stroke-dash: 3}
+  pick -> search -> experts -> settle
+  settle -> act: agreed
+  act -> write -> check
+  write <- check: fix it (up to 2 tries) {style.stroke-dash: 3}
+}
+
+tools: Business tools {
+  label: "Business tools\nonly this customer's data\n+ hard rules (refund limits,\nreturn windows)"
+}
+
+db: Database {shape: cylinder}
+
+human: Human support agent {
+  shape: person
+}
+
+customer <-> channels: message in, reply out
+channels -> intake
+intake -> agent.understand
+agent.experts -> tools: look up
+agent.act -> tools: do
+tools -> db
+
+agent.safety -> human: needs a person
+agent.settle -> human: no rule fits
+agent.check -> human: still not backed
+agent.write <- human: hand back with a note {style.stroke-dash: 3}
+
+agent.check -> channels: checked reply
+channels <- human: or replies directly {style.stroke-dash: 3}

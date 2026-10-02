@@ -78,7 +78,7 @@ async def debug_search(
                 document_title=c.document_title,
                 heading_path=c.heading_path,
                 content=c.content,
-                score=c.fused_score,
+                score=c.rerank_score if c.rerank_score is not None else c.fused_score,
             )
             for c in fused
         ],

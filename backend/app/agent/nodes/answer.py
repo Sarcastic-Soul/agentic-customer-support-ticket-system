@@ -3,18 +3,31 @@ import re
 
 from langchain_core.runnables import RunnableConfig
 
+from app.agent.progress import emit_progress
 from app.agent.prompts import load_prompt
 from app.agent.state import AgentState
 from app.agent.steps import record_step
 from app.channels.base import Channel, ResponseStyle
 from app.channels.registry import get_adapter
+from app.config import settings
 from app.llm.registry import get_llm
 from app.llm.roles import LLMRole
 
 NO_CONTEXT_REPLY = (
     "I don't have enough information to answer that confidently, so I'm "
-    "passing this to a specialist who can help - they'll follow up shortly."
+    "passing this to our support team - they'll follow up shortly."
 )
+
+CLARIFY_SITUATION = {
+    "unclear": "it isn't clear what the customer needs.",
+    "no_context": (
+        "you looked, but found nothing in the knowledge base or the customer's "
+        "account that answers it. Say plainly that you don't have that "
+        "information - never guess. If the question was vague, ask what they "
+        "mean; if it was clear, ask whether they'd like our support team to "
+        "confirm it for them."
+    ),
+}
 
 CITATION_RE = re.compile(r"\[(\d+)\]")
 
@@ -78,23 +91,58 @@ def _format_extra_guidance(state: AgentState) -> str:
     return "\n" + "\n".join(parts) + "\n"
 
 
+async def _clarify(state: AgentState, session, style: ResponseStyle, situation: str) -> dict:
+    """Asks the customer one specific question instead of handing off. Used
+    when the intent is unclear, and the first time(s) nothing was found to
+    answer from. hard_route and this node both stop at
+    settings.max_clarifications in a row, so an unclear customer still
+    reaches a human.
+    """
+    prompt = load_prompt(
+        "clarify",
+        situation=CLARIFY_SITUATION[situation],
+        style_guidance=_style_guidance(style),
+        history=format_history(state["history"]),
+        message=state["latest_message"],
+    )
+    client = get_llm(LLMRole.reason)
+    outcome = await client.ainvoke(prompt)
+    draft = outcome.text or "Could you tell me a bit more about what you need help with?"
+    await record_step(
+        session, run_id=state["run_id"], node="answer",
+        model=f"{outcome.provider}:{outcome.model}", prompt=prompt,
+        output={"draft": draft, "citations": [], "clarify": situation},
+        tokens_in=outcome.tokens_in, tokens_out=outcome.tokens_out,
+        latency_ms=outcome.latency_ms,
+    )
+    return {
+        "draft": draft, "citations": [], "outcome": "clarified",
+        "clarifications": state.get("clarifications", 0) + 1,
+    }
+
+
 async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
     session = config["configurable"]["session"]
 
-    # chitchat/feedback/spam/unknown (plan_node's tool_group == "none") need
+    # chitchat/feedback/spam/unknown (supervisor's tool_group == "none") need
     # no KB context or tool results - a plain conversational reply is the
     # correct behaviour, not an escalation. Only order/transaction/knowledge
     # intents that genuinely found nothing fall into the no-context gap
-    # below, which verify_node turns into a real knowledge_gap escalation.
+    # below: ask the customer a clarifying question first, and only after
+    # max_clarifications does verify_node turn it into a knowledge_gap
+    # escalation.
     #
     # tool_group is also None (never "none") when hard_route escalated
-    # before plan ever ran (customer_requested_human, abuse, legal, low
+    # before supervisor ever ran (customer_requested_human, abuse, legal, low
     # confidence, turn budget) - resuming that via return-to-ai lands here
     # with no tool_group set at all. Treat it the same as "none": the human
-    # note is what matters now, not a domain lookup that was never planned.
+    # note is what matters now, not a domain lookup that never ran.
     style = get_adapter(Channel(state["channel"])).style()
 
-    if state["tool_group"] in (None, "none"):
+    if state["tool_group"] == "clarify" and not state.get("human_note"):
+        return await _clarify(state, session, style, "unclear")
+
+    if state["tool_group"] in (None, "none", "clarify"):
         prompt = load_prompt(
             "chitchat",
             style_guidance=_style_guidance(style),
@@ -111,15 +159,21 @@ async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
             tokens_in=outcome.tokens_in, tokens_out=outcome.tokens_out,
             latency_ms=outcome.latency_ms,
         )
-        return {"draft": draft, "citations": [], "outcome": "answered"}
+        return {"draft": draft, "citations": [], "outcome": "answered", "clarifications": 0}
 
     if not state["retrieved"] and not state["tool_results"]:
+        if (
+            state.get("clarifications", 0) < settings.max_clarifications
+            and not state.get("human_note")
+        ):
+            return await _clarify(state, session, style, "no_context")
         await record_step(
             session, run_id=state["run_id"], node="answer",
             output={"skipped": True, "reason": "no retrieved context and no tool results"},
         )
         return {"draft": NO_CONTEXT_REPLY, "citations": [], "outcome": "no_context"}
 
+    await emit_progress(config, "answer", "Writing your reply")
     prompt = load_prompt(
         "answer",
         intent=state["intent"],
@@ -151,4 +205,4 @@ async def answer_node(state: AgentState, config: RunnableConfig) -> dict:
         latency_ms=outcome.latency_ms,
     )
 
-    return {"draft": draft, "citations": citations, "outcome": "answered"}
+    return {"draft": draft, "citations": citations, "outcome": "answered", "clarifications": 0}

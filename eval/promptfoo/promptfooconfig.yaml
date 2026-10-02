@@ -1,0 +1,26 @@
+# Prompt regression checks: `make promptfoo`.
+#
+# Runs the agent's real classify and verify prompts (backend/app/agent/prompts/)
+# through the project's own LLM registry and checks the structured output.
+# Catches a prompt edit that quietly breaks intent routing or lets an
+# ungrounded reply through - before it shows up as a drop in `make eval`.
+# Cheaper than the full eval: one LLM call per case, no DB, no graph.
+description: support-agent prompt regression
+
+prompts:
+  # The provider builds the real prompt from the vars; this is just a label.
+  - "{{task}}: {{message}}"
+
+providers:
+  - id: file://provider.py
+    label: registry
+    config:
+      pythonExecutable: ../../backend/.venv/bin/python
+
+tests:
+  - file://classify_tests.yaml
+  - file://verify_tests.yaml
+
+evaluateOptions:
+  # Free-tier RPM ceilings are per organization - keep it gentle.
+  maxConcurrency: 2

@@ -3,7 +3,8 @@ without auth (noted loudly there, not quietly); Stage 9 adds it - every
 route below requires a valid human_agents JWT (see app/core/auth.py).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -16,7 +17,18 @@ from app.channels.registry import get_adapter
 from app.core.auth import get_current_agent
 from app.core.tickets import transition_ticket
 from app.db.session import get_session
-from app.models import Conversation, Escalation, HumanAgent, Message, Ticket
+from app.models import (
+    Conversation,
+    Customer,
+    Escalation,
+    HumanAgent,
+    Message,
+    Order,
+    Refund,
+    Ticket,
+    TicketEvent,
+    Transaction,
+)
 
 router = APIRouter(
     prefix="/api/console", tags=["console"], dependencies=[Depends(get_current_agent)]
@@ -244,6 +256,7 @@ async def return_to_ai(
     final_state = await resume_agent(
         session, ticket_id=ticket.id,
         resume_payload={"action": "return_to_ai", "note": body.note},
+        publish_progress=True,
     )
     return {"resumed": True, "outcome": final_state.get("outcome")}
 
@@ -287,3 +300,138 @@ async def queue_stats(session: AsyncSession = Depends(get_session)) -> dict:
         "queued": len(rows),
         "by_priority": {p: sum(1 for row in rows if row[0] == p) for p in PRIORITY_ORDER},
     }
+
+
+# ---------- refund approval queue ----------
+#
+# Refunds the AI may not approve itself (over the ceiling, or no matching
+# fault) land here as status "requested" instead of escalating the whole
+# ticket. Approving or rejecting one is a single click for a human, and the
+# AI keeps the conversation. See docs/decisions/0007-fewer-handoffs.md.
+
+
+class ApprovalOut(BaseModel):
+    refund_id: int
+    ticket_id: int | None
+    ticket_reference: str | None
+    customer_name: str
+    order_number: str | None
+    txn_ref: str
+    payment_amount: Decimal
+    amount: Decimal
+    reason: str
+    requested_by_type: str
+    created_at: datetime
+
+
+class ApprovalDecision(BaseModel):
+    note: str = ""  # sent to the customer on reject
+
+
+async def _notify_customer(session: AsyncSession, ticket: Ticket | None, text: str) -> None:
+    if ticket is None or ticket.conversation_id is None:
+        return
+    conversation = await session.get(Conversation, ticket.conversation_id)
+    message = Message(
+        conversation_id=ticket.conversation_id, role="human_agent", body=text,
+        channel=ticket.channel, direction="outbound",
+    )
+    session.add(message)
+    await session.flush()
+    adapter = get_adapter(Channel(ticket.channel))
+    receipt = await adapter.send(
+        OutboundMessage(
+            channel=adapter.channel, external_thread_id=conversation.external_thread_id,
+            text=text,
+        )
+    )
+    message.delivery_status = "sent" if receipt.ok else "failed"
+    if receipt.ok and receipt.detail:
+        message.external_message_id = receipt.detail
+
+
+@router.get("/approvals", response_model=list[ApprovalOut])
+async def list_approvals(session: AsyncSession = Depends(get_session)) -> list[ApprovalOut]:
+    rows = (
+        await session.execute(
+            select(Refund, Transaction, Customer, Order, Ticket)
+            .join(Transaction, Refund.transaction_id == Transaction.id)
+            .join(Customer, Transaction.customer_id == Customer.id)
+            .outerjoin(Order, Transaction.order_id == Order.id)
+            .outerjoin(Ticket, Refund.ticket_id == Ticket.id)
+            .where(Refund.status == "requested")
+            .order_by(Refund.created_at)
+        )
+    ).all()
+    return [
+        ApprovalOut(
+            refund_id=refund.id, ticket_id=ticket.id if ticket else None,
+            ticket_reference=ticket.reference if ticket else None,
+            customer_name=customer.full_name,
+            order_number=order.order_number if order else None,
+            txn_ref=txn.txn_ref, payment_amount=txn.amount, amount=refund.amount,
+            reason=refund.reason, requested_by_type=refund.requested_by_type,
+            created_at=refund.created_at,
+        )
+        for refund, txn, customer, order, ticket in rows
+    ]
+
+
+async def _load_pending_refund(session: AsyncSession, refund_id: int) -> Refund:
+    refund = await session.get(Refund, refund_id)
+    if refund is None:
+        raise HTTPException(404, "refund not found")
+    if refund.status != "requested":
+        raise HTTPException(409, f"refund is already {refund.status}")
+    return refund
+
+
+@router.post("/approvals/{refund_id}/approve")
+async def approve_refund(
+    refund_id: int,
+    session: AsyncSession = Depends(get_session),
+    agent: HumanAgent = Depends(get_current_agent),
+) -> dict:
+    refund = await _load_pending_refund(session, refund_id)
+    refund.status = "approved"
+    refund.approved_by = agent.id
+    refund.expected_credit_by = date.today() + timedelta(days=7)
+
+    ticket = await session.get(Ticket, refund.ticket_id) if refund.ticket_id else None
+    if ticket is not None:
+        session.add(TicketEvent(
+            ticket_id=ticket.id, event_type="refund_approved", actor_type="human",
+            actor_id=str(agent.id), payload={"refund_id": refund.id, "amount": str(refund.amount)},
+        ))
+    await _notify_customer(
+        session, ticket,
+        f"Good news - your refund of {refund.amount} has been approved. Refunds to the "
+        "original payment method take 5-7 business days to show up.",
+    )
+    await session.commit()
+    return {"approved": True}
+
+
+@router.post("/approvals/{refund_id}/reject")
+async def reject_refund(
+    refund_id: int,
+    body: ApprovalDecision,
+    session: AsyncSession = Depends(get_session),
+    agent: HumanAgent = Depends(get_current_agent),
+) -> dict:
+    refund = await _load_pending_refund(session, refund_id)
+    refund.status = "rejected"
+    refund.approved_by = agent.id
+
+    ticket = await session.get(Ticket, refund.ticket_id) if refund.ticket_id else None
+    if ticket is not None:
+        session.add(TicketEvent(
+            ticket_id=ticket.id, event_type="refund_rejected", actor_type="human",
+            actor_id=str(agent.id), payload={"refund_id": refund.id, "note": body.note},
+        ))
+    text = "We reviewed your refund request and couldn't approve it this time."
+    if body.note.strip():
+        text += f" {body.note.strip()}"
+    await _notify_customer(session, ticket, text)
+    await session.commit()
+    return {"rejected": True}

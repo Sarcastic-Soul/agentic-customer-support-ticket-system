@@ -84,7 +84,11 @@ Short list. Everything else is negotiable; these are not, because each one eithe
 Channel adapters (web, WhatsApp, email, voice) contain **no LLM** — they normalize
 provider payloads to one `InboundMessage` and render `OutboundMessage` back. One
 channel-agnostic LangGraph state machine does all reasoning: `prepare → classify →
-hard_route → plan → retrieve → act → verify → respond | escalate`. Tools are typed
+hard_route → supervisor → retrieve → specialist ×1-2 (parallel) → reconcile →
+commit → answer → verify → respond | escalate`. Specialists (orders, logistics,
+payments) only *propose* writes; `reconcile` settles disagreements with a rule
+table in code (`policy/conflicts.py`) and `commit` carries out the survivors —
+see `docs/decisions/0006-specialist-agents.md`. Tools are typed
 Python functions behind a policy layer. Escalation pauses the graph at
 `interrupt()`; a human works it in the console and either resolves or returns
 control with a note, which resumes the graph from its checkpoint. Webhooks persist
@@ -102,7 +106,10 @@ make migrate   # alembic upgrade head
 make seed      # synthetic customers, orders, transactions, KB
 make dev       # api + worker + scheduler + vite dev server
 make demo      # reset, start, run the scripted demo scenario
-make eval      # python eval/run_eval.py
+make eval      # python eval/run_eval.py (LLM cache on; --no-cache for latency)
+make promptfoo # prompt regression: classify + verify prompts (eval/promptfoo/)
+make e2e       # Playwright browser tests, API mocked (frontend/e2e/)
+make langfuse  # optional self-hosted tracing UI on :3001
 ```
 
 `LLM_PROVIDER=stub` runs the whole pipeline offline with a deterministic fake
@@ -127,41 +134,12 @@ pnpm lint      # oxlint
 
 ## Repository layout
 
-`backend/app/` — one directory per layer, matching the architecture paragraph
-above:
-
-- `agent/` — the LangGraph state machine; `agent/nodes/` is one file per graph
-  node (`prepare`, `classify`, `hard_route`, `plan`, `retrieve`, `act`, `verify`,
-  `respond`/`escalate`), `agent/prompts/` the prompt files, `agent/checkpoint.py`
-  the psycopg checkpointer (import-order-sensitive, see its docstring).
-- `api/` — FastAPI routers (REST + WebSocket).
-- `channels/` — web, WhatsApp, email, voice adapters; no LLM calls live here.
-- `core/` — identity resolution, thread continuity, the ticket state machine.
-- `db/` — SQLAlchemy engine/session setup (the asyncpg pool).
-- `hil/` — human-in-the-loop: escalation queue, handoff packet, console-facing
-  logic.
-- `ingress/` — webhook/dedupe/persist-then-enqueue entrypoints.
-- `llm/` — `registry.py` (model ids from `.env` only) and the per-model RPM
-  pacer.
-- `models/` — SQLAlchemy ORM models.
-- `policy/` — `authorize()` and the other guardrails; runs in code, not prompts.
-- `rag/` — ingestion (`rag/ingest.py`, run via `make ingest`) and hybrid
-  retrieval (pgvector + Postgres full-text).
-- `schemas/` — Pydantic request/response and tool-argument models.
-- `seed/` — synthetic data (`seed/data.py`, `seed/run.py`, run via `make seed`).
-- `tools/` — typed tool functions plus `tools/registry.py`.
-- `voice/` — STT integration (Groq Whisper) shared by the web widget and
-  WhatsApp voice notes.
-- `workers/` — `arq` worker settings and cron jobs (e.g. `email_poll.py`).
-
-`frontend/src/` — `routes/` (TanStack Router file-based routes: chat, login,
-admin dashboard), `hooks/` (e.g. `useVoiceRecorder`), `lib/` (API client,
-query setup).
-
-`backend/tests/` mirrors the module layout above (`test_authorize.py`,
-`test_tickets.py`, `test_whatsapp.py`, etc.) rather than a `tests/unit` /
-`tests/integration` split — see `docs/07-build-stages.md#testing-policy` for
-which ~40 paths are actually required.
+`docs/repository-layout.md` has the directory-by-directory map. Quick version: `backend/app/` is one
+directory per layer — `agent/` (LangGraph state machine, one file per node), `api/`, `channels/`,
+`core/`, `db/`, `hil/`, `ingress/`, `llm/`, `models/`, `policy/`, `rag/`, `schemas/`, `seed/`,
+`tools/`, `voice/`, `workers/`. `frontend/src/` is `routes/` + `hooks/` + `lib/`. `backend/tests/`
+mirrors the module layout rather than a unit/integration split — see
+`docs/07-build-stages.md#testing-policy` for which paths are required.
 
 ## Stack facts that bite
 

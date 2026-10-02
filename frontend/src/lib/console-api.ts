@@ -41,6 +41,24 @@ export type TranscriptMessage = {
   created_at: string;
 };
 
+/** A refund the AI was not allowed to approve itself, waiting for a person.
+ * Amounts are decimals serialised as strings. */
+export type ApprovalOut = {
+  refund_id: number;
+  ticket_id: number | null;
+  ticket_reference: string | null;
+  customer_name: string | null;
+  order_number: string | null;
+  txn_ref: string;
+  payment_amount: string;
+  amount: string;
+  reason: string | null;
+  requested_by_type: string;
+  created_at: string;
+};
+
+/** Query key shared by the approvals page and the nav badge. */
+export const APPROVALS_KEY = ["console", "approvals"] as const;
 
 export const consoleApi = {
   queue: (opts?: { skill?: string; mine?: boolean }) => {
@@ -78,5 +96,16 @@ export const consoleApi = {
     request<{ resolved: boolean }>(`/api/console/escalations/${id}/resolve`, {
       method: "POST",
       body: JSON.stringify({ summary }),
+    }),
+
+  approvals: () => request<ApprovalOut[]>("/api/console/approvals"),
+
+  approve: (refundId: number) =>
+    request<{ approved: boolean }>(`/api/console/approvals/${refundId}/approve`, { method: "POST" }),
+
+  reject: (refundId: number, note: string) =>
+    request<{ rejected: boolean }>(`/api/console/approvals/${refundId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
     }),
 };
