@@ -287,6 +287,5 @@ evaluation harness. Those four are the project.
 
 - Save every manual test you run as an eval case. By Stage 11 the dataset should
   mostly already exist.
-- Tag a commit at the end of each stage.
 - Keep `docs/decisions/` going — one short file per non-obvious choice. Nearly
   free, and the report ends up half-written.

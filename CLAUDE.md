@@ -186,6 +186,5 @@ Three files, all cheap, all of which make the final report mostly write itself:
 
 - Commits are authored by the user alone. Never add a `Co-Authored-By` trailer,
   a "Generated with Claude Code" line, or any other attribution.
-- Tag a commit at the end of each stage.
 - Conventional commit subjects (`feat:`, `fix:`, `docs:`, `chore:`), under 50
   characters, body only when the "why" is not obvious.
