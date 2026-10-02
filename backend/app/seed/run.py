@@ -2,8 +2,8 @@
 documents. Fixed random seed (see app.seed.data) so demos are reproducible.
 
 Idempotent: truncates the tables it owns first, so `make seed` can be re-run
-freely. Does not touch kb_chunks/embeddings - that's the RAG ingestion step
-(Stage 3), which chunks and embeds whatever is in kb_documents.
+freely. That includes kb_chunks, so embeddings must be rebuilt afterwards
+(`make seed` runs `make ingest` for this).
 
 Usage: python -m app.seed.run
 """
@@ -61,9 +61,24 @@ TRUNCATE_TABLES = [
 ]
 
 
+# LangGraph's checkpoint tables (created by the worker's checkpointer
+# .setup(), so they may not exist yet). Ticket ids restart at 1 after a seed
+# and the graph thread is "ticket:{id}" - leaving these would hand a new
+# ticket an old ticket's saved state (e.g. its clarification count).
+CHECKPOINT_TABLES = ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]
+
+
 async def _truncate_all(session) -> None:
     tables = ", ".join(TRUNCATE_TABLES)
     await session.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+    existing = (
+        await session.execute(
+            text("SELECT tablename FROM pg_tables WHERE tablename = ANY(:names)"),
+            {"names": CHECKPOINT_TABLES},
+        )
+    ).scalars().all()
+    if existing:
+        await session.execute(text(f"TRUNCATE {', '.join(existing)}"))
 
 
 async def seed() -> None:
