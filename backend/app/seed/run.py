@@ -98,6 +98,11 @@ async def seed() -> None:
                 session.add(
                     CustomerIdentity(customer_id=customer.id, channel="email", external_id=sc.email)
                 )
+                # web chat logs in by email (api/customer.py) - without this a
+                # seeded customer gets a fresh, empty account on web
+                session.add(
+                    CustomerIdentity(customer_id=customer.id, channel="web", external_id=sc.email)
+                )
 
         seed_orders = build_orders()
         order_rows: dict[str, Order] = {}

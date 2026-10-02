@@ -15,8 +15,11 @@ down:
 migrate:
 	$(BACKEND) alembic upgrade head
 
+# seed wipes the KB chunks, so it always re-embeds them - a seed without
+# ingest leaves search empty and every policy question unanswered
 seed:
 	$(BACKEND) python -m app.seed.run
+	$(MAKE) ingest
 
 ingest:
 	$(BACKEND) python -m app.rag.ingest
@@ -45,7 +48,6 @@ demo:
 	$(MAKE) up
 	$(MAKE) migrate
 	$(MAKE) seed
-	$(MAKE) ingest
 	@trap 'kill 0' EXIT INT TERM; \
 	$(MAKE) api & \
 	$(MAKE) worker & \

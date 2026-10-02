@@ -131,7 +131,14 @@ async def check_cancellation_eligibility(ctx: ToolContext, order_number: str) ->
     if order is None:
         return {"error": "order_not_found"}
     decision = authorize_cancel_order(order)
-    return {"eligible": decision.decision == Decision.ALLOW, "reason": decision.reason}
+    # The deadline itself, so "how long do I have?" is answered from data,
+    # not worked out by the model
+    return {
+        "eligible": decision.decision == Decision.ALLOW, "reason": decision.reason,
+        "cancellable_until": (
+            order.cancellable_until.isoformat() if order.cancellable_until else None
+        ),
+    }
 
 
 @register_tool(
@@ -175,7 +182,12 @@ async def check_return_eligibility(ctx: ToolContext, order_number: str, sku: str
         return {"error": "item_not_found_on_order"}
 
     decision = authorize_return_item(order, item)
-    return {"eligible": decision.decision == Decision.ALLOW, "reason": decision.reason}
+    return {
+        "eligible": decision.decision == Decision.ALLOW, "reason": decision.reason,
+        "return_window_ends": (
+            order.return_window_ends.isoformat() if order.return_window_ends else None
+        ),
+    }
 
 
 @register_tool(

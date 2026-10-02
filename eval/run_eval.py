@@ -97,7 +97,7 @@ async def resolve_sender_identity(session, case: dict) -> str:
     if customer_id is None:
         return f"eval-{case['id']}"
 
-    column = {"whatsapp": "whatsapp", "email": "email"}.get(channel)
+    column = {"whatsapp": "whatsapp", "email": "email", "web": "web"}.get(channel)
     if column is None:
         return f"eval-{case['id']}"
 
@@ -250,7 +250,13 @@ def score_deterministic(case: dict, result: dict) -> dict:
     reply_lower = reply.lower()
 
     intent_correct = result["actual_intent"] == case["expected_intent"]
-    outcome_correct = result["actual_outcome"] == case["expected_outcome"]
+    # also_ok_outcomes: e.g. a knowledge gap may end "clarified" (nothing
+    # found) or "answered" (found loose matches, said plainly it can't
+    # confirm) - both mean nothing was invented and nobody was pulled in
+    outcome_correct = (
+        result["actual_outcome"] == case["expected_outcome"]
+        or result["actual_outcome"] in case.get("also_ok_outcomes", [])
+    )
 
     expected_tools = set(case.get("expected_tools", []))
     actual_tools = set(result["actual_tools"])
@@ -495,7 +501,9 @@ async def main() -> None:
     elif args.ablation:
         configs = [args.ablation]
     elif args.all_ablations:
-        configs = ["full", "no_rag", "no_verify", "dense_only", "all_tools", "single_agent", "no_rerank"]
+        configs = [
+            "full", "no_rag", "no_verify", "dense_only", "all_tools", "single_agent", "no_rerank",
+        ]
     else:
         configs = ["full"]
 

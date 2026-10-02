@@ -41,3 +41,13 @@
   assert:
     - type: javascript
       value: "JSON.parse(output).answers_question === false"
+
+- description: "verify: passes an honest 'we don't have that information'"
+  vars:
+    task: verify
+    message: "do you ship to Singapore?"
+    context: "[1] Delivery: orders within India arrive in 3-7 business days."
+    draft: "I don't have information on shipping to Singapore, so I can't confirm it. Would you like our support team to check for you?"
+  assert:
+    - type: javascript
+      value: "const v = JSON.parse(output); v.grounded && v.answers_question && v.policy_safe"

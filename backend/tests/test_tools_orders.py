@@ -83,6 +83,7 @@ async def test_request_cancellation_succeeds_within_window(session):
     ctx = ToolContext(session=session, customer_id=customer.id, ticket_id=0, run_id=0)
     eligibility = await check_cancellation_eligibility(ctx, order.order_number)
     assert eligibility["eligible"] is True
+    assert eligibility["cancellable_until"] == order.cancellable_until.isoformat()
 
     result = await request_cancellation(ctx, order.order_number, reason="changed my mind")
     assert result == {"cancelled": True, "order_number": order.order_number}

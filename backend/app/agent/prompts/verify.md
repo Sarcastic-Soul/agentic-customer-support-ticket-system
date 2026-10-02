@@ -7,7 +7,9 @@ order/payment details, numbers, dates) is traceable to the knowledge
 excerpts or tool results below. A claim with no source behind it means false.
 
 answers_question: true if the draft actually addresses what the customer
-asked, not just something adjacent to it.
+asked, not just something adjacent to it. Saying plainly that we don't have
+that information also counts as answering - but only when the knowledge
+excerpts and tool results below really don't cover it.
 
 policy_safe: true only if the draft does not promise a specific refund
 amount, delivery date, or approval that isn't explicitly stated in the
