@@ -1,8 +1,10 @@
 import {
+  HeadsetIcon,
   MicrophoneIcon,
   PaperPlaneRightIcon,
   StopIcon,
   TrayIcon,
+  UserIcon,
   UserSwitchIcon,
   WarningCircleIcon,
   XIcon,
@@ -13,6 +15,7 @@ import { useVoiceRecorder } from "../../hooks/useVoiceRecorder";
 import { type AgentProgress, type ChatMessage, useWebChat } from "../../hooks/useWebChat";
 import { cx } from "../../lib/cx";
 import { fetchCurrentMessages, type CustomerSession } from "../../lib/customer";
+import { Markdown } from "./Markdown";
 import { TicketList } from "./TicketList";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -175,9 +178,11 @@ function ConnectedChat({
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={SPRING}
-                    className={cx("flex", m.role === "customer" ? "justify-end" : "justify-start")}
+                    className={cx("flex items-end gap-2", m.role === "customer" ? "justify-end" : "justify-start")}
                   >
+                    {m.role !== "customer" && <Avatar role={m.role} />}
                     <Bubble message={m} />
+                    {m.role === "customer" && <Avatar role={m.role} />}
                   </motion.li>
                 ))}
                 {working && <WorkingIndicator key="typing" progress={progress} />}
@@ -261,7 +266,7 @@ function WorkingIndicator({ progress }: { progress: AgentProgress | null }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={reduce ? { duration: 0 } : { delay: progress ? 0 : 0.4, duration: 0.2 }}
-      className="flex items-center gap-2 text-xs text-ink-3"
+      className="flex items-center gap-2 pl-9 text-xs text-ink-3"
       role="status"
       data-testid="agent-progress"
     >
@@ -287,25 +292,46 @@ function WorkingIndicator({ progress }: { progress: AgentProgress | null }) {
   );
 }
 
+/** Sits at the bottom corner of each bubble: the customer on the right,
+ * support (AI or a person) on the left. A human agent gets the ochre ring
+ * that matches their "Support team" label. */
+function Avatar({ role }: { role: ChatMessage["role"] }) {
+  const customer = role === "customer";
+  const Icon = customer ? UserIcon : HeadsetIcon;
+  return (
+    <span
+      aria-hidden
+      className={cx(
+        "mb-px inline-flex size-7 shrink-0 items-center justify-center rounded-full border",
+        customer && "border-rule-strong bg-sunk text-ink-2",
+        role === "human_agent" && "border-ochre/60 bg-ochre-soft text-ochre",
+        role !== "customer" && role !== "human_agent" && "border-rule bg-surface text-ink-2",
+      )}
+    >
+      <Icon size={15} weight="regular" />
+    </span>
+  );
+}
+
 function Bubble({ message }: { message: ChatMessage }) {
   if (message.role === "customer") {
     return (
-      <div className="max-w-[85%] rounded-lg rounded-br-[3px] bg-ink px-3.5 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words text-paper sm:max-w-[75%]">
+      <div className="max-w-[80%] rounded-lg rounded-br-[3px] bg-ink px-3.5 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words text-paper sm:max-w-[75%]">
         {message.text}
       </div>
     );
   }
   const human = message.role === "human_agent";
   return (
-    <div className="max-w-[88%] sm:max-w-[78%]">
+    <div className="min-w-0 max-w-[82%] sm:max-w-[75%]">
       {human && <p className="mb-1 text-xs font-medium text-ochre">Support team</p>}
       <div
         className={cx(
-          "rounded-lg rounded-bl-[3px] border bg-surface px-3.5 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words text-ink",
+          "rounded-lg rounded-bl-[3px] border bg-surface px-3.5 py-2.5 text-[15px] leading-relaxed break-words text-ink",
           human ? "border-ochre/50" : "border-rule",
         )}
       >
-        {message.text}
+        <Markdown text={message.text} />
       </div>
     </div>
   );
