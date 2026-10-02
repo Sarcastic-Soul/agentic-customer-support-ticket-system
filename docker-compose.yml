@@ -1,3 +1,30 @@
+# One command for the whole stack: `docker compose up -d --build`, then open
+# http://localhost:5173. Your own keys go in .env (copy .env.example); with no
+# .env at all it still runs, on the offline stub model.
+
+# Shared by setup, api and worker - same image, different command. The
+# environment block points them at the containers instead of localhost.
+x-backend: &backend
+  build: ./backend
+  image: ai-customer-support-backend
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+asyncpg://support:support@postgres:5432/support
+    CHECKPOINT_DATABASE_URL: postgresql://support:support@postgres:5432/support
+    REDIS_URL: redis://redis:6379/0
+    # Embedding + reranker models download once into the shared volume
+    # instead of once per container.
+    FASTEMBED_CACHE_PATH: /root/.cache/fastembed
+  volumes:
+    - models:/root/.cache
+  # lets LANGFUSE_HOST=http://host.docker.internal:3001 reach a Langfuse
+  # running on the host (Linux needs this mapping; Mac/Windows have it)
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
 services:
   postgres:
     image: pgvector/pgvector:pg18
@@ -7,7 +34,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-support}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support}
     ports:
-      - "5434:5432"
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -20,7 +47,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -33,56 +60,48 @@ services:
     environment:
       PGWEB_DATABASE_URL: postgres://support:support@postgres:5432/support?sslmode=disable
     ports:
-      - "8081:8081"
+      - "${PGWEB_PORT:-8081}:8081"
     depends_on:
       - postgres
 
-  # ---- everything below is opt-in (`docker compose --profile app up -d`,
-  # or `make docker-up`) - native `make dev` users get only postgres/redis/
-  # pgweb above, exactly as before. This profile is for running the whole
-  # stack with nothing installed but Docker. ----
+  # ---- the app: one-shot setup, then api + worker + frontend. Native
+  # `make dev` users run `make up`, which starts only the three services
+  # above. ----
 
-  api:
-    profiles: [app]
-    build: ./backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://support:support@postgres:5432/support
-      CHECKPOINT_DATABASE_URL: postgresql://support:support@postgres:5432/support
-      REDIS_URL: redis://redis:6379/0
-    ports:
-      - "8000:8000"
+  # Extensions + migrations (docker-entrypoint.sh), then seed + ingest only
+  # if the database is empty (app/seed/bootstrap.py). Exits when done; api
+  # and worker wait for it.
+  setup:
+    <<: *backend
+    command: python -m app.seed.bootstrap
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
+
+  api:
+    <<: *backend
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on: &after-setup
+      setup:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
   worker:
-    profiles: [app]
-    build: ./backend
+    <<: *backend
     command: arq app.workers.settings.WorkerSettings
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://support:support@postgres:5432/support
-      CHECKPOINT_DATABASE_URL: postgresql://support:support@postgres:5432/support
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    depends_on: *after-setup
 
   frontend:
-    profiles: [app]
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "${WEB_PORT:-5173}:80"
     depends_on:
       - api
 
 volumes:
   pgdata:
+  models:

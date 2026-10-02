@@ -125,7 +125,7 @@ duplicates the reasoning, tools and policy per channel and lets them drift.
 ## Commands
 
 ```bash
-make up        # docker compose: postgres 18 + pgvector, redis
+make up        # postgres 18 + pgvector, redis, pgweb only (for native dev)
 make migrate   # alembic upgrade head
 make seed      # wipe + reseed every table, clear agent checkpoints, re-ingest KB
 make ingest    # re-chunk and re-embed KB articles only
@@ -133,7 +133,7 @@ make dev       # api + worker + vite dev server
 make demo      # up, migrate, seed, start, run scripts/demo_scenario.py
 make test      # backend pytest
 make lint      # ruff check app
-make docker-up # whole stack in containers (seed/ingest still one-off)
+make docker-up # = docker compose up -d --build: whole stack, seeds on first boot
 make eval      # python eval/run_eval.py (LLM cache on; --no-cache for latency)
 make promptfoo # prompt regression: classify + verify prompts (eval/promptfoo/)
 make e2e       # Playwright browser tests, API mocked (frontend/e2e/)
@@ -194,7 +194,8 @@ backend/
                               cache (Redis), pricing, stub (offline fake model)
     models/                   SQLAlchemy: commerce, support, escalation, kb, observability
     db/session.py             asyncpg engine + sessions
-    seed/                     data.py (synthetic customers/orders/KB), run.py (`make seed`)
+    seed/                     data.py (synthetic customers/orders/KB), run.py (`make seed`),
+                              bootstrap.py (Docker first boot: seed + ingest if DB empty)
     voice/stt.py              Groq Whisper transcription
     workers/                  arq settings (jobs + email cron), tasks, queue, email_poll
     hil/, schemas/            empty placeholders
@@ -212,7 +213,8 @@ eval/
   promptfoo/                  classify + verify prompt regression
 scripts/demo_scenario.py      automated half of the escalation demo
 docs/                         REPORT, agent-orchestration, architecture-overview, decisions/
-docker-compose.yml            postgres 18 + pgvector, redis, pgweb; `--profile app` for the app
+docker-compose.yml            whole stack: postgres, redis, pgweb, setup (one-shot), api, worker,
+                              frontend (nginx); .env optional, stub model without it
 docker-compose.langfuse.yml   optional Langfuse on :3001
 ```
 

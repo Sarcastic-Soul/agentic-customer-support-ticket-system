@@ -41,20 +41,32 @@ kept for reference.
 
 ## Quick start
 
+Only Docker needed:
+
 ```bash
-cp .env.example .env          # add GEMINI_API_KEY and GROQ_API_KEY
-make up                       # postgres + redis
+cp .env.example .env          # add GEMINI_API_KEY and/or GROQ_API_KEY
+docker compose up -d --build
+```
+
+The first start builds the images, creates the tables and loads sample
+customers, orders, payments and help articles. Later starts keep your data.
+Without a `.env`, or with `LLM_PROVIDER=stub`, it runs on a fake offline model,
+so no keys are needed. Ports clash with something else? Set `WEB_PORT`,
+`API_PORT`, `POSTGRES_HOST_PORT` or `REDIS_HOST_PORT` in `.env`.
+
+To start over with fresh sample data: `docker compose run --rm setup python -m app.seed.run`
+and then `docker compose run --rm setup python -m app.rag.ingest`.
+
+Running the code directly (Python 3.13 with `uv`, Node with `pnpm`):
+
+```bash
+make up                       # postgres + redis only
 make migrate                  # database tables
-make seed                     # sample customers, orders, payments, help articles
+make seed                     # sample data
 make dev                      # api + worker + frontend
 ```
 
-`make demo` resets everything and runs a scripted demo. `LLM_PROVIDER=stub` runs
-the whole thing offline with a fake model, no keys needed.
-
-No Python or Node installed? `make docker-up`, then
-`docker compose exec api python -m app.seed.run` and
-`docker compose exec api python -m app.rag.ingest`.
+`make demo` resets everything and runs a scripted demo.
 
 | URL | What |
 |---|---|

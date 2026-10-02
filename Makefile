@@ -3,8 +3,9 @@
 
 BACKEND=cd backend && . .venv/bin/activate &&
 
+# databases only, for native `make dev` - `make docker-up` runs everything
 up:
-	docker compose up -d
+	docker compose up -d postgres redis pgweb
 	@echo "waiting for postgres..."
 	@until docker compose exec -T postgres pg_isready -U support -d support >/dev/null 2>&1; do sleep 1; done
 	@docker compose exec -T postgres psql -U support -d support -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS citext;" >/dev/null
@@ -75,17 +76,15 @@ e2e:
 lint:
 	$(BACKEND) ruff check app
 
-# Everything containerized - nothing but Docker needed. Builds api/worker/
-# frontend images and runs the whole stack (postgres, redis, pgweb, api,
-# worker, frontend). Migrations + extensions run automatically on boot
-# (backend/docker-entrypoint.sh); seed/ingest are still one-off steps.
+# Everything containerized - nothing but Docker needed. Same as plain
+# `docker compose up -d --build`: the setup container migrates, and seeds +
+# ingests on first boot only (app/seed/bootstrap.py).
 docker-up:
-	docker compose --profile app up -d --build
-	@echo "seed once with:   docker compose exec api python -m app.seed.run"
-	@echo "then ingest with: docker compose exec api python -m app.rag.ingest"
+	docker compose up -d --build
+	@echo "open http://localhost:5173 (staff login: priya.agent@example.com / dev-password)"
 
 docker-down:
-	docker compose --profile app down
+	docker compose down
 
 # Self-hosted Langfuse on :3001 for tracing - see docker-compose.langfuse.yml.
 langfuse:
