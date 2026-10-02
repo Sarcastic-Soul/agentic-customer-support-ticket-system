@@ -186,6 +186,7 @@ Prototype: infrastructure that prevents a class of bug is kept; polish that does
 
 | Document | Contents |
 |---|---|
+| [`docs/agent-orchestration.md`](docs/agent-orchestration.md) | **Start here.** Every agent, who talks to whom, conflict rules, handoff |
 | [`docs/01-architecture.md`](docs/01-architecture.md) | Layers, diagrams, request/escalation lifecycles |
 | [`docs/02-tech-stack.md`](docs/02-tech-stack.md) | Every dependency and why, repo layout |
 | [`docs/03-data-model.md`](docs/03-data-model.md) | Full schema, state machine, seed data |

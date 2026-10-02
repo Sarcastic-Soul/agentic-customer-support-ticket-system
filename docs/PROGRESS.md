@@ -1161,10 +1161,9 @@ verbatim into the report's limitations section.
   completion - Stage 11/`docs/REPORT.md` §6. The harness is ready; it needs
   LLM quota headroom this project's free-tier keys didn't have on the day
   it was built.
-- PII redaction is regex-grade by design decision
-  (`docs/decisions/0003-prototype-scope.md`), not ML-grade - it will miss
-  card/OTP formats it wasn't written for, same tolerance as every other
-  "regex-grade" claim in this project.
+- PII redaction is Presidio (spaCy `en_core_web_sm`) plus regex rules since
+  the Upgrades entry. The small spaCy model misses some lone first names;
+  regex rules still miss card/OTP formats they weren't written for.
 
 ## Things that surprised us
 
